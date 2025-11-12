@@ -1,0 +1,15 @@
+{
+  "name": "@stratdeck/data",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.4.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.1"
+  }
+}

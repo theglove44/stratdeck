@@ -1,0 +1,10 @@
+weights:
+  credit_ratio: 0.30
+  pop: 0.25
+  liquidity: 0.20
+  ivr: 0.20
+  diversification: 0.05
+
+thresholds:
+  min_pop: 0.55
+  min_credit_ratio: 0.01

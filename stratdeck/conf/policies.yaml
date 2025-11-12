@@ -1,0 +1,18 @@
+policies:
+  # buying power caps
+  account_bp_cap: 5000
+  per_trade_bp_cap: 500
+
+  # minimums
+  min_credit_per_width: 0.40
+  min_pop: 0.90
+
+  # allowed spreads
+  allowed_widths_index: [1, 2, 3, 4, 5, 10]
+  allowed_widths_equity: [5, 10]
+
+  # exposure limits
+  per_symbol_open_spreads_cap: 3
+
+  # fees (per contract leg)
+  fee_per_contract_leg: 2.00

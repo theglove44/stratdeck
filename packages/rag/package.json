@@ -1,0 +1,11 @@
+{
+  "name": "@stratdeck/rag",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.1"
+  }
+}

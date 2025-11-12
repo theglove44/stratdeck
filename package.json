@@ -1,0 +1,22 @@
+{
+  "name": "stratdeck-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "tsx apps/cli/src/index.ts",
+    "build": "turbo run build",
+    "migrate": "tsx packages/data/src/migrate.ts",
+    "etl": "python3 scripts/ingest_trades.py --reset",
+    "mcp:smoke": "tsx scripts/mcp_smoke.ts",
+    "test": "tsx --test tests/**/*.ts"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.9.1",
+    "tsx": "^4.16.0",
+    "turbo": "^2.2.3",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

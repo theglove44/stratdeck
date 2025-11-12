@@ -1,0 +1,43 @@
+{
+  "quotes": [
+    {
+      "symbol": "SPY251029C00560000",
+      "bid": 0.52,
+      "ask": 0.61,
+      "delta": 0.18,
+      "openInterest": 145,
+      "updatedAt": "2025-10-22T15:30:00Z"
+    },
+    {
+      "symbol": "SPY251029C00565000",
+      "bid": 0.21,
+      "ask": 0.27,
+      "delta": 0.07,
+      "openInterest": 97,
+      "updatedAt": "2025-10-22T15:30:00Z"
+    },
+    {
+      "symbol": "SPY251029P00520000",
+      "bid": 0.64,
+      "ask": 0.72,
+      "delta": -0.22,
+      "openInterest": 132,
+      "updatedAt": "2025-10-22T15:30:00Z"
+    },
+    {
+      "symbol": "SPY251029P00515000",
+      "bid": 0.34,
+      "ask": 0.39,
+      "delta": -0.08,
+      "openInterest": 88,
+      "updatedAt": "2025-10-22T15:30:00Z"
+    }
+  ],
+  "underlyings": [
+    {
+      "symbol": "SPY",
+      "price": 544.12,
+      "asOf": "2025-10-22T15:30:00Z"
+    }
+  ]
+}

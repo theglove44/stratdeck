@@ -1,0 +1,15 @@
+{
+  "name": "@stratdeck/mcp-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts"
+  },
+  "dependencies": {
+    "zod": "^3.23.8",
+    "@stratdeck/data": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.1"
+  }
+}

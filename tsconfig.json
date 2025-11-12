@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "target": "ES2022",
+    "moduleResolution": "Bundler",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@stratdeck/mcp-server": ["packages/mcp-server/src"],
+      "@stratdeck/mcp-server/*": ["packages/mcp-server/src/*"],
+      "@stratdeck/mcp-tools": ["packages/mcp-tools/src"],
+      "@stratdeck/data": ["packages/data/src"],
+      "@stratdeck/data-live": ["packages/data-live/src"],
+      "@stratdeck/config": ["packages/config/src"],
+      "@stratdeck/rag": ["packages/rag/src"],
+      "@stratdeck/sims": ["packages/sims/src"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}
