@@ -39,8 +39,25 @@ Mock mode uses the offline heuristics + CSV ledgers in `stratdeck/data/`. Live m
 | `python -m stratdeck.cli close --position-id ID --exit-credit X` | Close a paper trade, compute realized P/L, journal it |
 | `python -m stratdeck.cli report --daily` | Summarize opens/closes, win rate, realized P/L, and live balances |
 | `python -m stratdeck.cli doctor` | Run diagnostics (env, provider reachability, config files) |
+| `python -m stratdeck.cli chartist -s SYMBOL [--json-output]` | Run ChartistAgent technical analysis for one or more symbols and emit either a fallback summary or JSON `TA_RESULT` maps |
+| `python -m stratdeck.cli scan-ta [--json-output]` | Run Scout → Chartist to score candidates, print TA-enriched data, or dump the JSON for automation |
+| `python -m stratdeck.cli trade-ideas [--json-output]` | Scout → Chartist → TradePlanner pipeline that outputs structured trade ideas with legs, rationale, and vol/trend context |
 
 `enter --confirm` prints both the broker ticket id (from the simulated fill) and the ledger position id recorded in `positions.csv`. Use that ID with the `close` command.
+
+## Chartist TA & trade idea pipeline
+
+`ChartistAgent` now sits alongside the existing Scout/Trader stack. It wraps `ChartistEngine` (`stratdeck/tools/ta.py`), a deterministic technical-analysis core that classifies trend/volatility/regime, spots structure and simple patterns, computes TA scores, and returns a `TAResult` rich with `trend_regime`, `vol_regime`, `momentum`, `structure`, `scores`, and `options_guidance`. ChartistAgent can run with an optional LLM client and uses the prompts in `stratdeck/conf/prompts/chartist_system.md` and `chartist_report.md` to drive human summaries; if no LLM is provided it falls back to the built-in plain-text summary you see on the `chartist` command.
+
+`ChartistEngine` is data-agnostic: it consumes `data_client` objects when supplied, defaults to synthetic mock candles (`STRATDECK_DATA_MODE=mock`), and, when running in live mode, will try to pull OHLCV from `yfinance` (install `yfinance` if you want live-chart candles without wiring a custom client). Missing data or yfinance failures gracefully revert to synthetic candles with a warning so the CLI remains runnable.
+
+The new CLI helpers bridge Scout → Chartist → TradePlanner:
+
+- `python -m stratdeck.cli chartist -s SPX -s XSP` runs ChartistAgent for each symbol, optionally accepts `--strategy-hint`, `--timeframe`, `--lookback-bars`, and emits either the fallback summary or the raw `TA_RESULT` JSON when `--json-output` is set.
+- `python -m stratdeck.cli scan-ta` runs ScoutAgent and feeds the candidate list through ChartistAgent to produce TA-enriched rows (`ta_score`, `ta_directional_bias`, `ta_vol_bias`, support/resistance, scoring metadata). By default it prints a simple table; add `--json-output` to capture the entire enriched payload for other tooling.
+- `python -m stratdeck.cli trade-ideas` pipes Scout → Chartist → `TradePlanner` (`stratdeck/agents/trade_planner.py`). TradePlanner converts the TA context into `TradeIdea` structs with legs, rationale, notes, and underlying hints. The command prints human-readable trade ideas but you can rerun it with `--json-output` to consume the structured output elsewhere (e.g., TraderAgent, journaling scripts, or a RiskAgent).
+
+The Chartist prompts in `stratdeck/conf/prompts/chartist_system.md` and `chartist_report.md` are the place to tweak how an LLM interprets the deterministic TA data, while the `TAResult`/`TradeIdea` JSONs remain machine-friendly for automation.
 
 ## Live Mode Notes
 

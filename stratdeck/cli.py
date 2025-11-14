@@ -1,13 +1,16 @@
 # stratdeck/cli.py
 import click
+import json
 from typing import Optional
 from .agents.scout import ScoutAgent
 from .agents.trader import TraderAgent
 from .agents.risk import RiskAgent
 from .agents.compliance import ComplianceAgent
+from .agents.trade_planner import TradePlanner
 from .core.config import cfg
 from .tools.account import is_live_mode, provider_account_summary, provider_positions_state
 from .data.factory import get_provider
+from .tools.chartist import ChartistAgent
 
 # cache the most recent scan so you can pick by index
 _last_scan: list[dict] = []
@@ -246,7 +249,275 @@ def doctor():
     else:
         msg = "All green. Live mode ready." if live_mode else "All green. Ready to ruin some market makers' day (paper only)."
         print(msg)
+        
+@cli.command()
+@click.option(
+    "--symbols",
+    "-s",
+    multiple=True,
+    required=True,
+    help="One or more symbols to analyse (e.g. -s SPX -s XSP).",
+)
+@click.option(
+    "--strategy-hint",
+    "-H",
+    type=click.Choice(
+        [
+            "short_premium_range",
+            "short_premium_trend",
+            "long_premium_breakout",
+        ],
+        case_sensitive=False,
+    ),
+    default=None,
+    help="Optional strategy context for the TA engine.",
+)
+@click.option(
+    "--timeframe",
+    "-t",
+    default="30m",
+    show_default=True,
+    help="Primary timeframe to use for TA (for now, single TF passed to the engine).",
+)
+@click.option(
+    "--lookback-bars",
+    "-n",
+    default=200,
+    show_default=True,
+    help="Number of bars to fetch for TA on the primary timeframe.",
+)
+@click.option(
+    "--json-output",
+    is_flag=True,
+    help="If set, prints the raw TA_RESULT dict as JSON instead of a human summary.",
+)
+def chartist(symbols, strategy_hint, timeframe, lookback_bars, json_output):
+    """
+    Run ChartistAgent over one or more symbols and print technical analysis output.
 
+    Examples:
+      python -m stratdeck.cli chartist -s SPX -s XSP -H short_premium_range
+      python -m stratdeck.cli chartist -s SPY --json-output
+    """
+    # For now we run without an LLM client, so ChartistAgent will use its
+    # built-in fallback_summary(). If you have a central LLM client, pass it in here.
+    agent = ChartistAgent()
+
+    click.echo(f"Running Chartist TA for symbols: {', '.join(symbols)}", err=True)
+    if strategy_hint:
+        click.echo(f"Strategy hint: {strategy_hint}", err=True)
+
+    results = {}
+    for sym in symbols:
+        try:
+            ta_res = agent.analyze_symbol(
+                symbol=sym,
+                strategy_hint=strategy_hint,
+                timeframes=(timeframe,),
+                lookback_bars=lookback_bars,
+            )
+        except Exception as exc:
+            click.echo(f"[{sym}] ERROR: {exc}", err=True)
+            continue
+
+        if json_output:
+            results[sym] = ta_res.to_dict()
+        else:
+            summary = agent._fallback_summary(ta_res)
+            click.echo("\n" + "=" * 60)
+            click.echo(summary)
+            click.echo("=" * 60 + "\n")
+
+    if json_output:
+        # Dump a compact JSON blob that other tools / scripts can consume.
+        click.echo(json.dumps(results, indent=2, default=str))
+
+@cli.command(name="scan-ta")
+@click.option(
+    "--strategy-hint",
+    "-H",
+    type=click.Choice(
+        [
+            "short_premium_range",
+            "short_premium_trend",
+            "long_premium_breakout",
+        ],
+        case_sensitive=False,
+    ),
+    default="short_premium_range",
+    show_default=True,
+    help="Hint for how TA should weight signals (range, trend, breakout).",
+)
+@click.option(
+    "--timeframe",
+    "-t",
+    default="30m",
+    show_default=True,
+    help="Primary timeframe to use for TA.",
+)
+@click.option(
+    "--lookback-bars",
+    "-n",
+    default=200,
+    show_default=True,
+    help="Number of bars to fetch for TA on the primary timeframe.",
+)
+@click.option(
+    "--json-output",
+    is_flag=True,
+    help="Output enriched scan as JSON instead of a human-readable table.",
+)
+def scan_ta(strategy_hint, timeframe, lookback_bars, json_output):
+    """
+    Run ScoutAgent → ChartistAgent pipeline.
+
+    1) ScoutAgent.scan() generates candidate symbols.
+    2) ChartistAgent attaches TA metadata (ta_score, directional bias, vol bias, levels).
+    3) Output can be JSON or a simple table.
+
+    Example:
+      python -m stratdeck.cli scan-ta
+      python -m stratdeck.cli scan-ta -H long_premium_breakout --json-output
+    """
+    scout = ScoutAgent()
+    chartist = ChartistAgent()  # no LLM client yet; uses fallback summary
+
+    # 1) Run scout
+    base_results = scout.run()
+    if not base_results:
+        click.echo("Scout returned no candidates.", err=True)
+        return
+
+    # 2) Run chartist enrichment
+    enriched = chartist.analyze_scout_batch(
+        scout_results=base_results,
+        default_strategy_hint=strategy_hint,
+    )
+
+    if json_output:
+        # Dump the full enriched rows, including 'ta' blob
+        click.echo(json.dumps(enriched, indent=2, default=str))
+        return
+
+    # 3) Human-readable summary table
+    click.echo(f"Found {len(enriched)} candidates (scout → chartist):\n")
+
+    # Simple header
+    header = f"{'SYM':<8} {'SCOUT_SCORE':<12} {'TA_SCORE':<8} {'DIR':<18} {'VOL':<14}"
+    click.echo(header)
+    click.echo("-" * len(header))
+
+    for row in enriched:
+        sym = str(row.get("symbol", "??"))
+        scout_score = row.get("score", "")
+        ta_score = row.get("ta_score", 0.0)
+        dir_bias = row.get("ta_directional_bias", "")
+        vol_bias = row.get("ta_vol_bias", "")
+
+        # format nice-ish
+        scout_str = f"{scout_score:.3f}" if isinstance(scout_score, (int, float)) else str(scout_score)
+        ta_str = f"{ta_score:.2f}"
+
+        line = f"{sym:<8} {scout_str:<12} {ta_str:<8} {dir_bias:<18} {vol_bias:<14}"
+        click.echo(line)
+
+
+@cli.command(name="trade-ideas")
+@click.option(
+    "--strategy-hint",
+    "-H",
+    type=click.Choice(
+        [
+            "short_premium_range",
+            "short_premium_trend",
+            "long_premium_breakout",
+        ],
+        case_sensitive=False,
+    ),
+    default="short_premium_range",
+    show_default=True,
+    help="Baseline strategy to assume when TA data lacks explicit hints.",
+)
+@click.option(
+    "--dte-target",
+    "-d",
+    type=int,
+    default=45,
+    show_default=True,
+    help="Target days-to-expiration used when constructing synthetic legs.",
+)
+@click.option(
+    "--max-per-symbol",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Maximum number of ideas per symbol.",
+)
+@click.option(
+    "--json-output",
+    is_flag=True,
+    help="Emit raw TradeIdea structures as JSON instead of formatted text.",
+)
+def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output):
+    """
+    Generate structured trade ideas using Scout → Chartist → TradePlanner pipeline.
+    """
+    scout = ScoutAgent()
+    chartist = ChartistAgent()
+    planner = TradePlanner()
+
+    base_results = scout.run()
+    if not base_results:
+        click.echo("Scout returned no candidates.", err=True)
+        return
+
+    enriched = chartist.analyze_scout_batch(
+        scout_results=base_results,
+        default_strategy_hint=strategy_hint,
+    )
+    if not enriched:
+        click.echo("Chartist did not produce any TA-enriched rows.", err=True)
+        return
+
+    ideas = planner.generate_from_scan_results(
+        scan_rows=enriched,
+        default_strategy=strategy_hint,
+        dte_target=dte_target,
+        max_per_symbol=max_per_symbol,
+    )
+    if not ideas:
+        click.echo("No trade ideas matched the current signals.", err=True)
+        return
+
+    if json_output:
+        payload = [idea.to_dict() for idea in ideas]
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    click.echo(f"Generated {len(ideas)} trade idea(s):\n")
+    for idea in ideas:
+        header = (
+            f"{idea.symbol}: {idea.strategy} | {idea.direction} | "
+            f"vol {idea.vol_context} | target {idea.dte_target or dte_target} DTE"
+        )
+        click.echo(header)
+        click.echo(f"  Rationale: {idea.rationale}")
+        if idea.notes:
+            for note in idea.notes:
+                click.echo(f"  Note: {note}")
+        click.echo("  Legs:")
+        for leg in idea.legs:
+            expiry = leg.expiry or (f"{idea.dte_target or dte_target}DTE")
+            strike = f"{leg.strike:.2f}" if isinstance(leg.strike, (int, float)) else str(leg.strike)
+            click.echo(
+                f"    - {leg.side.upper()} {leg.type.upper()} "
+                f"{strike} exp {expiry} x{leg.quantity}"
+            )
+        if idea.underlying_price_hint:
+            click.echo(f"  Underlying hint: {idea.underlying_price_hint:.2f}")
+        click.echo("")
+
+    click.echo("\nTip: re-run with --json-output to feed into TraderAgent or other tools.")
 
 if __name__ == "__main__":
     cli()
