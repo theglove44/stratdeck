@@ -132,6 +132,31 @@ class TraderAgent:
             self.journal.log_open(position_id, spread_plan, qty, summary.get("preview", {}))
         return out
 
+    def enter_from_idea(
+        self,
+        idea: Any,
+        qty: int = 1,
+        *,
+        confirm: bool = False,
+        live_order: bool = False,
+        portfolio: Optional[dict] = None,
+    ) -> dict:
+        """
+        Convenience wrapper:
+        - adapt TradeIdea -> spread_plan
+        - build/preview OrderPlan
+        - run compliance
+        - optionally place (paper or live)
+        """
+        spread_plan = self.plan_from_idea(idea)
+        return self.enter_trade(
+            spread_plan=spread_plan,
+            qty=qty,
+            portfolio=portfolio,
+            confirm=confirm,
+            live_order=live_order,
+        )
+
     def plan_from_symbol(self, symbol: str, width: int, dte: int, target_delta: float = 0.20) -> dict:
         return self._build_spread_plan(symbol, "PUT_CREDIT", dte, width, target_delta)
 
