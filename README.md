@@ -5,7 +5,7 @@ StratDeck is now a pure Python CLI that can scan candidates, run compliance, log
 ## Quickstart
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .  # or pip install -r requirements.txt if you prefer
 
@@ -13,6 +13,8 @@ pip install -e .  # or pip install -r requirements.txt if you prefer
 cp .env.example .env
 # set STRATDECK_DATA_MODE=mock to stay fully local
 
+# From this point onward we assume `python` points to your Python 3 interpreter.
+# If your shell lacks a `python` binary, keep using `python3` (e.g. `python3 -m stratdeck.cli scan --top 5`).
 python -m stratdeck.cli scan --top 5
 ```
 
