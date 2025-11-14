@@ -15,8 +15,6 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     yf = None
 
-_YF_WARNING_EMITTED = False
-
 
 Timeframe = str
 
@@ -585,6 +583,22 @@ class ChartistEngine:
         self.data_client = data_client
         self.mode = mode or os.getenv("STRATDECK_DATA_MODE", "mock")
 
+    def _map_symbol_for_data(self, symbol: str) -> str:
+        """
+        Map StratDeck symbols to data-provider symbols for OHLCV.
+
+        This ONLY affects how we fetch candles, not how we label TAResult.
+        """
+        s = symbol.upper()
+
+        # Index mapping (yfinance quirks)
+        alias_map = {
+            "SPX": "^GSPC",   # S&P 500 index
+            "XSP": "^GSPC",   # mini SPX – structurally same index; scale is fine for TA
+        }
+
+        return alias_map.get(s, symbol)
+
     # ---- public API ----
 
     def analyze(
@@ -655,11 +669,6 @@ class ChartistEngine:
     def _get_ohlcv(self, symbol: str, timeframe: Timeframe, lookback_bars: int) -> Optional[pd.DataFrame]:
         """
         Fetch OHLCV data for the symbol/timeframe.
-
-        - If a `data_client` is provided and has a `get_ohlcv(symbol, timeframe, lookback_bars)` method,
-          that will be used.
-        - Otherwise, in 'mock' mode we generate synthetic data.
-        - Otherwise, we try yfinance if available (and warn once if it is missing).
         """
         if self.data_client is not None and hasattr(self.data_client, "get_ohlcv"):
             return self.data_client.get_ohlcv(symbol, timeframe, lookback_bars)
@@ -668,46 +677,36 @@ class ChartistEngine:
             return self._mock_ohlcv(symbol, lookback_bars)
 
         if yf is None:
-            global _YF_WARNING_EMITTED
-            if not _YF_WARNING_EMITTED:
-                warnings.warn(
-                    "ChartistEngine falling back to synthetic OHLCV data because yfinance "
-                    "is not installed. Install yfinance or provide a custom data_client "
-                    "to use live candles.",
-                    RuntimeWarning,
-                )
-                _YF_WARNING_EMITTED = True
-            return self._mock_ohlcv(symbol, lookback_bars)
+            raise RuntimeError("No data_client provided, and yfinance is not installed.")
+
+        # 🔹 NEW: map SPX/XSP → ^GSPC (or other aliases) for yfinance
+        yf_symbol = self._map_symbol_for_data(symbol)
 
         interval = self._map_tf_to_yf_interval(timeframe)
-        try:
-            df = yf.download(symbol, period="60d", interval=interval, auto_adjust=False, progress=False)
-        except Exception as exc:
-            warnings.warn(
-                f"ChartistEngine failed to fetch {symbol} candles via yfinance ({exc}); using synthetic data instead.",
-                RuntimeWarning,
-            )
-            return self._mock_ohlcv(symbol, lookback_bars)
+        df = yf.download(
+            yf_symbol,
+            period="60d",
+            interval=interval,
+            auto_adjust=False,
+            progress=False,
+        )
 
+        # If still nothing, fall back to synthetic (keep your existing warning)
         if df is None or df.empty:
+            import warnings
             warnings.warn(
-                f"ChartistEngine received no OHLCV data for {symbol} from yfinance; using synthetic data instead.",
-                RuntimeWarning,
+                f"ChartistEngine received no OHLCV data for {symbol} "
+                f"(mapped to {yf_symbol}) from yfinance; using synthetic data instead."
             )
             return self._mock_ohlcv(symbol, lookback_bars)
 
-        # yfinance may return MultiIndex columns even for a single symbol.
-        # Normalise to a flat, single-level OHLCV dataframe.
+        # Handle MultiIndex columns
         if isinstance(df.columns, pd.MultiIndex):
-            # Common pattern: top level is OHLCV, second level is ticker symbol.
-            # Try to select the specific symbol if present.
             try:
-                df = df.xs(symbol, axis=1, level=-1)
+                df = df.xs(yf_symbol, axis=1, level=-1)
             except Exception:
-                # Fallback: drop the last level and keep first level only.
                 df = df.droplevel(-1, axis=1)
 
-        # Keep only the last `lookback_bars` rows
         if len(df) > lookback_bars:
             df = df.iloc[-lookback_bars:]
 
