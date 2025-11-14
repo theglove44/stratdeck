@@ -1,6 +1,7 @@
 # stratdeck/cli.py
 import click
 import json
+from pathlib import Path
 from typing import Optional
 from .agents.scout import ScoutAgent
 from .agents.trader import TraderAgent
@@ -462,7 +463,12 @@ def scan_ta(strategy_hint, timeframe, lookback_bars, json_output):
     is_flag=True,
     help="Emit raw TradeIdea structures as JSON instead of formatted text.",
 )
-def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output):
+@click.argument(
+    "output_path",
+    required=False,
+    type=click.Path(dir_okay=False, writable=True),
+)
+def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output, output_path):
     """
     Generate structured trade ideas using Scout → Chartist → TradePlanner pipeline.
     """
@@ -495,9 +501,17 @@ def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output):
 
     store_trade_ideas(ideas)
 
+    if output_path and not json_output:
+        raise click.ClickException("--output-path requires --json-output.")
+
     if json_output:
         payload = [idea.to_dict() for idea in ideas]
-        click.echo(json.dumps(payload, indent=2, default=str))
+        blob = json.dumps(payload, indent=2, default=str)
+        if output_path:
+            Path(output_path).write_text(blob, encoding="utf-8")
+            click.echo(f"Wrote {len(ideas)} ideas to {output_path}")
+        else:
+            click.echo(blob)
         return
 
     click.echo(f"Generated {len(ideas)} trade idea(s):\n")
