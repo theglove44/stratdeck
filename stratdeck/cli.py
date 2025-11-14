@@ -508,7 +508,10 @@ def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output, output_p
         payload = [idea.to_dict() for idea in ideas]
         blob = json.dumps(payload, indent=2, default=str)
         if output_path:
-            Path(output_path).write_text(blob, encoding="utf-8")
+            path = Path(output_path)
+            if not path.parent.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(blob, encoding="utf-8")
             click.echo(f"Wrote {len(ideas)} ideas to {output_path}")
         else:
             click.echo(blob)
