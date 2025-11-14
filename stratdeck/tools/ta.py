@@ -15,6 +15,8 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     yf = None
 
+from .scan_cache import ScanCache, load_last_scan as _load_last_scan
+
 
 SPX_XSP_DATA_MAP = {
     "SPX": {
@@ -41,6 +43,12 @@ def resolve_symbols(raw_symbol: str) -> tuple[str, str]:
     # default: data == trade for normal tickers
     return s, s
 
+
+def load_last_scan() -> "ScanCache":
+    """
+    Helper that exposes the shared scan cache object through the TA toolset.
+    """
+    return _load_last_scan()
 
 Timeframe = str
 

@@ -11,9 +11,8 @@ from .core.config import cfg
 from .tools.account import is_live_mode, provider_account_summary, provider_positions_state
 from .data.factory import get_provider
 from .tools.chartist import ChartistAgent
-
-# cache the most recent scan so you can pick by index
-_last_scan: list[dict] = []
+from .tools.scan_cache import store_scan_rows, store_trade_ideas
+from .tools.ta import load_last_scan
 
 def _fmt_row(c: dict) -> str:
     # accepts POP/IVR as 0-1 or 0-100 and renders nicely
@@ -26,6 +25,22 @@ def _fmt_row(c: dict) -> str:
             f"POP {pop_pct:>3}%  IVR {ivr_pct:>3}%  "
             f"score {c['score']:.3f}  {c['rationale']}")
 
+
+def _prepare_trader_agent() -> tuple[TraderAgent, dict]:
+    positions_state = provider_positions_state() if is_live_mode() else {}
+    compliance = ComplianceAgent.from_config(cfg(), positions_state=positions_state)
+    if is_live_mode():
+        acct = provider_account_summary()
+        bp = acct.get("buying_power") if isinstance(acct, dict) else None
+        if bp is not None:
+            try:
+                compliance.pack.account_bp_available = float(bp)
+            except (TypeError, ValueError):
+                pass
+    trader = TraderAgent(compliance=compliance)
+    portfolio = {"mode": "live" if is_live_mode() else "mock", "positions_state": positions_state}
+    return trader, portfolio
+
 @click.group()
 def cli():
     """StratDeck Agent System CLI"""
@@ -35,10 +50,9 @@ def cli():
 @click.option("--top", default=5, show_default=True, help="How many candidates to display")
 def scan(top: int):
     """Scan watchlist and print ranked candidates."""
-    global _last_scan
     agent = ScoutAgent()
     results = agent.run()
-    _last_scan = results or []
+    store_scan_rows(results or [])
     if not results:
         print("No candidates passed thresholds.")
         return
@@ -56,38 +70,28 @@ def enter(pick: Optional[int], qty: int, confirm: bool, live_order: bool):
     If --pick is omitted or cache is empty, performs a fresh scan and picks the top idea.
     Use --confirm to simulate a paper fill and journal it.
     """
-    global _last_scan
-
-    if not _last_scan:
+    cache = load_last_scan()
+    rows = cache.rows
+    if not rows:
         agent = ScoutAgent()
-        _last_scan = agent.run()
-        if not _last_scan:
+        rows = agent.run() or []
+        store_scan_rows(rows)
+        if not rows:
             print("No candidates available to enter.")
             return
 
     if pick is None:
         pick = 1
     idx = pick - 1
-    if idx < 0 or idx >= len(_last_scan):
-        print(f"Invalid pick {pick}. Run `scan` and choose 1..{len(_last_scan)}.")
+    if idx < 0 or idx >= len(rows):
+        print(f"Invalid pick {pick}. Run `scan` and choose 1..{len(rows)}.")
         return
 
-    chosen = _last_scan[idx]
-    positions_state = provider_positions_state() if is_live_mode() else {}
-    compliance = ComplianceAgent.from_config(cfg(), positions_state=positions_state)
-    if is_live_mode():
-        acct = provider_account_summary()
-        bp = acct.get("buying_power") if isinstance(acct, dict) else None
-        if bp is not None:
-            try:
-                compliance.pack.account_bp_available = float(bp)
-            except (TypeError, ValueError):
-                pass
-    trader = TraderAgent(compliance=compliance)
+    chosen = rows[idx]
+    trader, portfolio = _prepare_trader_agent()
     if live_order and not is_live_mode():
         print("--live-order ignored: STRATDECK_DATA_MODE is not live.")
         live_order = False
-    portfolio = {"mode": "live" if is_live_mode() else "mock", "positions_state": positions_state}
     result = trader.enter_trade(chosen, qty, portfolio, confirm=confirm, live_order=live_order)
 
     comp = result["compliance"]
@@ -489,6 +493,8 @@ def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output):
         click.echo("No trade ideas matched the current signals.", err=True)
         return
 
+    store_trade_ideas(ideas)
+
     if json_output:
         payload = [idea.to_dict() for idea in ideas]
         click.echo(json.dumps(payload, indent=2, default=str))
@@ -518,6 +524,50 @@ def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output):
         click.echo("")
 
     click.echo("\nTip: re-run with --json-output to feed into TraderAgent or other tools.")
+
+
+@cli.command("enter-from-idea")
+@click.option("-i", "--index", "idea_index", type=int, required=True, help="Index into last TradeIdea list")
+@click.option("-q", "--qty", type=int, default=1, show_default=True, help="Number of spreads/contracts")
+@click.option("--live/--paper", default=False, show_default=True, help="Route via real broker or stay in paper mode")
+@click.option(
+    "--confirm/--no-confirm",
+    default=False,
+    show_default=True,
+    help="If set, actually place (paper + broker) instead of preview only",
+)
+def enter_from_idea(idea_index: int, qty: int, live: bool, confirm: bool) -> None:
+    """
+    Enter a trade directly from a ranked TradeIdea.
+
+    Flow:
+      - read last scan
+      - pick idea[index]
+      - snap strikes/expiry via chains engine
+      - run compliance + preview
+      - optionally place order(s)
+    """
+    cache = load_last_scan()
+    ideas = cache.ideas
+    if not ideas:
+        raise click.ClickException("No TradeIdeas found in last scan.")
+
+    try:
+        idea = ideas[idea_index]
+    except IndexError:
+        raise click.ClickException(f"Idea index {idea_index} out of range; have {len(ideas)} ideas.")
+
+    trader, portfolio = _prepare_trader_agent()
+    result = trader.enter_from_idea(
+        idea=idea,
+        qty=qty,
+        portfolio=portfolio,
+        confirm=confirm,
+        live_order=live,
+    )
+
+    click.echo(json.dumps(result, indent=2, default=str))
+
 
 if __name__ == "__main__":
     cli()
