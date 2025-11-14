@@ -16,6 +16,32 @@ except Exception:  # pragma: no cover - optional dependency
     yf = None
 
 
+SPX_XSP_DATA_MAP = {
+    "SPX": {
+        "data_symbol": "^GSPC",
+        "trade_symbol": "SPX",
+        "multiplier": 100,
+    },
+    "XSP": {
+        "data_symbol": "^GSPC",
+        "trade_symbol": "XSP",
+        "multiplier": 100,
+    },
+}
+
+
+def resolve_symbols(raw_symbol: str) -> tuple[str, str]:
+    """
+    Return (data_symbol, trade_symbol) given a user / scan symbol.
+    """
+    s = raw_symbol.upper()
+    if s in SPX_XSP_DATA_MAP:
+        m = SPX_XSP_DATA_MAP[s]
+        return m["data_symbol"], m["trade_symbol"]
+    # default: data == trade for normal tickers
+    return s, s
+
+
 Timeframe = str
 
 

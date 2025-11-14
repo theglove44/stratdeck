@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..tools.ta import resolve_symbols
+
 
 @dataclass
 class TradeLeg:
@@ -36,6 +38,8 @@ class TradeIdea:
     can map this into real option contracts and order plans.
     """
     symbol: str
+    data_symbol: str
+    trade_symbol: str
     strategy: str                   # "iron_condor", "short_put_spread", etc.
     direction: str                  # "bullish", "bearish", "neutral", etc.
     vol_context: str                # "normal", "elevated", "expansion_likely"
@@ -43,6 +47,8 @@ class TradeIdea:
     legs: List[TradeLeg]
     underlying_price_hint: Optional[float] = None
     dte_target: Optional[int] = None
+    spread_width: Optional[float] = None
+    target_delta: Optional[float] = None
     notes: List[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -160,7 +166,9 @@ class TradePlanner:
             range_info,
         )
 
-        legs = self._build_legs_from_ta(
+        data_symbol, trade_symbol = resolve_symbols(symbol)
+
+        legs, spread_width = self._build_legs_from_ta(
             strategy_type=strategy_type,
             support_levels=support_levels,
             resistance_levels=resistance_levels,
@@ -186,6 +194,8 @@ class TradePlanner:
 
         idea = TradeIdea(
             symbol=symbol,
+            data_symbol=data_symbol,
+            trade_symbol=trade_symbol,
             strategy=strategy_type,
             direction=direction,
             vol_context=vol_bias,
@@ -193,6 +203,8 @@ class TradePlanner:
             legs=legs,
             underlying_price_hint=underlying_hint,
             dte_target=dte_target,
+            spread_width=spread_width,
+            target_delta=0.20,
             notes=notes,
         )
         return [idea]
@@ -286,7 +298,7 @@ class TradePlanner:
         resistance_levels: List[float],
         underlying_hint: Optional[float],
         dte_target: int,
-    ) -> List[TradeLeg]:
+    ) -> Tuple[List[TradeLeg], float]:
         """
         Build a logical vertical/IC from TA levels.
 
@@ -311,7 +323,7 @@ class TradePlanner:
             elif resistance_levels:
                 underlying_hint = resistance_levels[0]
             else:
-                return []
+                return [], 0.0
 
         ref_price = float(underlying_hint)
 
@@ -364,7 +376,7 @@ class TradePlanner:
                 TradeLeg(side="short", type="put", strike=float(short_strike), expiry=expiry_str),
             ]
 
-        return legs
+        return legs, spread_width
 
     def _direction_from_strategy(self, strategy_type: str, dir_bias: str) -> str:
         if strategy_type in ("short_put_spread", "long_call_spread"):
