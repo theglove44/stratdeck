@@ -201,6 +201,9 @@ class TraderAgent:
     def plan_from_symbol(self, symbol: str, width: int, dte: int, target_delta: float = 0.20) -> dict:
         return self._build_spread_plan(symbol, "PUT_CREDIT", dte, width, target_delta)
 
+    ALLOWED_INDEX_WIDTHS = (5, 10, 25)
+    ALLOWED_EQUITY_WIDTHS = (1, 2, 3, 5)
+
     def plan_from_idea(
         self,
         idea: Any,
@@ -241,9 +244,21 @@ class TraderAgent:
             strategy = "PUT_CREDIT"
 
         target_dte = int(_get("target_dte", "dte", default=default_target_dte))
-        width = _get("spread_width", "width")
-        if width is None:
-            width = default_spx_width if symbol == "SPX" else default_xsp_width
+
+        width_hint = _get("spread_width", "width")
+
+        if symbol in {"SPX", "XSP"}:
+            if width_hint is None:
+                width = default_spx_width if symbol == "SPX" else default_xsp_width
+            else:
+                allowed = self.ALLOWED_INDEX_WIDTHS
+                width = min(allowed, key=lambda w: abs(float(width_hint) - w))
+        else:
+            if width_hint is None:
+                width = 3
+            else:
+                allowed = self.ALLOWED_EQUITY_WIDTHS
+                width = min(allowed, key=lambda w: abs(float(width_hint) - w))
         width = int(width)
 
         target_delta = float(
