@@ -14,6 +14,9 @@ from .data.factory import get_provider
 from .tools.chartist import ChartistAgent
 from .tools.scan_cache import store_scan_rows, store_trade_ideas
 from .tools.ta import load_last_scan
+from .tools.ideas import load_last_ideas
+from .trader import TraderAgent
+from .tools.ideas import load_last_ideas
 
 def _fmt_row(c: dict) -> str:
     # accepts POP/IVR as 0-1 or 0-100 and renders nicely
@@ -544,30 +547,29 @@ def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output, output_p
 
 
 @cli.command("enter-from-idea")
-@click.option("-i", "--index", "idea_index", type=int, required=True, help="Index into last TradeIdea list")
-@click.option("-q", "--qty", type=int, default=1, show_default=True, help="Number of spreads/contracts")
-@click.option("--live/--paper", default=False, show_default=True, help="Route via real broker or stay in paper mode")
+@click.option("-i", "--index", "idea_index", type=int, required=True,
+              help="Index into last TradeIdeas set (0-based)")
+@click.option("-q", "--qty", type=int, default=1, show_default=True,
+              help="Number of spreads/contracts to trade")
+@click.option("--live/--paper", "live", default=False, show_default=True,
+              help="Route to live broker (True) or keep in paper mode (False)")
 @click.option(
     "--confirm/--no-confirm",
     default=False,
     show_default=True,
-    help="If set, actually place (paper + broker) instead of preview only",
+    help="If set, actually place order(s) instead of preview-only",
 )
 def enter_from_idea(idea_index: int, qty: int, live: bool, confirm: bool) -> None:
     """
-    Enter a trade directly from a ranked TradeIdea.
+    Enter a trade directly from the last TradeIdeas run.
 
-    Flow:
-      - read last scan
-      - pick idea[index]
-      - snap strikes/expiry via chains engine
-      - run compliance + preview
-      - optionally place order(s)
+    Usage:
+      python -m stratdeck.cli trade-ideas --json-output .stratdeck/last_trade_ideas.json
+      python -m stratdeck.cli enter-from-idea -i 0
     """
-    cache = load_last_scan()
-    ideas = cache.ideas
+    ideas = load_last_ideas()
     if not ideas:
-        raise click.ClickException("No TradeIdeas found in last scan.")
+        raise click.ClickException("No TradeIdeas found. Run 'trade-ideas --json-output' first.")
 
     try:
         idea = ideas[idea_index]
