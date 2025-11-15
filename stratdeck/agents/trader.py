@@ -132,6 +132,38 @@ class TraderAgent:
             self.journal.log_open(position_id, spread_plan, qty, summary.get("preview", {}))
         return out
 
+    def vet_idea(
+        self,
+        idea: Any,
+        qty: int = 1,
+    ) -> dict:
+        """
+        Dry-run a TradeIdea through the full build_order_plan + ComplianceAgent
+        without placing anything.
+
+        Returns a small report dict with:
+          - allowed: bool
+          - violations: list[str]
+          - spread_plan: dict
+          - order_summary: dict (price, bp, etc.)
+        """
+        spread_plan = self.plan_from_idea(idea)
+        order_plan, pv, summary = self.build_order_plan(spread_plan, qty)
+
+        comp_result = self.compliance.approve(
+            plan=order_plan,
+            preview=pv,
+            candidate=spread_plan,
+        )
+        compliance_summary = self._format_compliance(comp_result)
+
+        return {
+            "allowed": compliance_summary["allowed"],
+            "violations": compliance_summary.get("reasons", []),
+            "spread_plan": spread_plan,
+            "order_summary": summary,
+        }
+
     def enter_from_idea(
         self,
         idea: Any,
