@@ -201,19 +201,11 @@ class TraderAgent:
         default_xsp_width: int = 1,
         default_target_delta: float = 0.20,
     ) -> dict:
-        """
-        Adapt a TradeIdea (from ta.py) into the spread_plan dict that the existing
-        TraderAgent/OrderPlan pipeline understands.
-
-        This is intentionally defensive: it works with either a dataclass-like
-        object or a plain dict.
-        """
         if hasattr(idea, "to_dict"):
             data = idea.to_dict()
         elif isinstance(idea, dict):
             data = idea
         else:
-            # Fall back to __dict__ for dataclasses / simple objects
             data = getattr(idea, "__dict__", {})
 
         def _get(*keys, default=None):
@@ -226,46 +218,30 @@ class TraderAgent:
                         return v
             return default
 
-        # Resolve trade vs data symbol; ta.py should ensure these are set.
         symbol = _get("trade_symbol", "symbol", "underlying")
         if not symbol:
             raise ValueError("TradeIdea has no symbol/trade_symbol/underlying set")
-
         symbol = str(symbol).upper()
 
-        # Strategy / side
-        raw_strategy = (_get("strategy", "kind", default="PUT_CREDIT") or "PUT_CREDIT").upper()
-
-        # Normalise a few common labels
-        if raw_strategy in {"SHORT_PUT_VERTICAL", "SHORT_PUT_SPREAD"}:
+        raw_strategy = (_get("strategy", "kind", default="short_put_spread") or "").lower()
+        if "put" in raw_strategy:
             strategy = "PUT_CREDIT"
-        elif raw_strategy in {"SHORT_CALL_VERTICAL", "SHORT_CALL_SPREAD"}:
+        elif "call" in raw_strategy:
             strategy = "CALL_CREDIT"
         else:
-            strategy = raw_strategy
+            strategy = "PUT_CREDIT"
 
-        # DTE / width / target delta
         target_dte = int(_get("target_dte", "dte", default=default_target_dte))
         width = _get("spread_width", "width")
         if width is None:
-            if symbol == "SPX":
-                width = default_spx_width
-            elif symbol == "XSP":
-                width = default_xsp_width
-            else:
-                # Fallback – you can tune this per underlying if you want
-                width = default_xsp_width
-
+            width = default_spx_width if symbol == "SPX" else default_xsp_width
         width = int(width)
-        target_delta = float(_get("target_delta", "delta", "entry_delta", default=default_target_delta))
 
-        # Optional metadata
-        rationale = _get("rationale", "notes", "reason")
-        idea_id = _get("id", "idea_id")
-        source = _get("source", default="scanner")
+        target_delta = float(
+            _get("target_delta", "delta", "entry_delta", default=default_target_delta)
+        )
 
-        # Delegate strike snapping + expiry choice to existing chains/pricing stack
-        plan = self._build_spread_plan(
+        spread_plan = self._build_spread_plan(
             symbol=symbol,
             strategy=strategy,
             dte=target_dte,
@@ -273,14 +249,11 @@ class TraderAgent:
             target_delta=target_delta,
         )
 
-        # Attach the idea metadata so journal/compliance can see it
-        if idea_id is not None:
-            plan["idea_id"] = idea_id
-        if rationale:
-            plan["rationale"] = rationale
-        plan["source"] = source
+        spread_plan["idea_id"] = _get("id", "idea_id")
+        spread_plan["rationale"] = _get("rationale", "notes", "reason")
+        spread_plan["source"] = _get("source", default="scanner")
 
-        return plan
+        return spread_plan
 
 
     def _to_tasty_order(self, order_plan: OrderPlan, price: float) -> Dict[str, Any]:
