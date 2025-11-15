@@ -20,30 +20,49 @@ class TraderAgent:
         self.journal = JournalAgent()
         self.provider = get_provider() if is_live_mode() else None
 
+    def _resolve_expiry(self, leg: Dict[str, Any]) -> Optional[str]:
+        for key in ("expiry", "exp", "expiration", "expiration_date"):
+            if key in leg and leg[key]:
+                return leg[key]
+        return None
+
     def _build_spread_plan(self, symbol: str, strategy: str, dte: int, width: int, target_delta: float) -> dict:
-        vert = fetch_vertical_candidates(symbol, dte, target_delta, width)
-        credit = credit_for_vertical(vert)
-        pop = pop_estimate(vert, target_delta)
-        plan = {
+        candidates = fetch_vertical_candidates(symbol, dte, target_delta, width)
+        short = candidates.get("short", {})
+        long = candidates.get("long", {})
+        expiry = (
+            self._resolve_expiry(short)
+            or self._resolve_expiry(long)
+            or candidates.get("expiry")
+            or ""
+        )
+        if not expiry:
+            raise ValueError(f"Spread candidate missing expiry for {symbol}: {short}")
+
+        legs = [
+            {"side": "short", "type": short.get("type", "put"), "strike": short["strike"], "expiry": expiry},
+            {"side": "long", "type": long.get("type", "put"), "strike": long["strike"], "expiry": expiry},
+        ]
+
+        return {
             "symbol": symbol,
             "strategy": strategy,
-            "expiry": vert["expiry"],
-            "width": vert["width"],
-            "credit": credit,
-            "pop": pop,
-            "legs": {
-                "short_put": vert["short"],
-                "long_put": vert["long"]
-            }
+            "target_dte": dte,
+            "width": candidates.get("width", width),
+            "target_delta": target_delta,
+            "credit": credit_for_vertical(candidates),
+            "pop": pop_estimate(candidates, target_delta),
+            "spread_plan_source": candidates,
+            "expiry": expiry,
+            "legs": legs,
         }
-        return plan
 
     def _order_plan_from_spread(self, spread_plan: dict, qty: int) -> OrderPlan:
         symbol = spread_plan["symbol"]
         expiry = spread_plan.get("expiry")
-        legs = spread_plan.get("legs", {})
-        short_leg = legs.get("short_put") or legs.get("short")
-        long_leg = legs.get("long_put") or legs.get("long")
+        legs = spread_plan.get("legs", [])
+        short_leg = next((leg for leg in legs if leg.get("side", "").lower() == "short"), None)
+        long_leg = next((leg for leg in legs if leg.get("side", "").lower() == "long"), None)
 
         def _make_leg(leg_data: dict, side: str) -> Optional[OrderLeg]:
             if not leg_data:
