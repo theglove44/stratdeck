@@ -586,5 +586,28 @@ def enter_from_idea(idea_index: int, qty: int, live: bool, confirm: bool) -> Non
     click.echo(json.dumps(result, indent=2, default=str))
 
 
+@cli.command("vet-idea")
+@click.option("-i","--index","idea_index", type=int, required=True,
+              help="Index into last TradeIdeas set (0-based)")
+@click.option("-q","--qty", type=int, default=1, show_default=True,
+              help="Quantity of spreads/contracts to vet")
+def vet_idea(idea_index: int, qty: int) -> None:
+    """
+    Preview compliance outcome for a saved TradeIdea without placing anything.
+    """
+    ideas = load_last_ideas()
+    if not ideas:
+        raise click.ClickException("No TradeIdeas found. Run 'trade-ideas --json-output' first.")
+
+    try:
+        idea = ideas[idea_index]
+    except IndexError:
+        raise click.ClickException(f"Idea index {idea_index} out of range; have {len(ideas)} ideas.")
+
+    trader, _ = _prepare_trader_agent()
+    report = trader.vet_idea(idea=idea, qty=qty)
+    click.echo(json.dumps(report, indent=2, default=str))
+
+
 if __name__ == "__main__":
     cli()
