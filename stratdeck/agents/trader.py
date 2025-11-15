@@ -58,45 +58,35 @@ class TraderAgent:
         }
 
     def _order_plan_from_spread(self, spread_plan: dict, qty: int) -> OrderPlan:
+        legs: List[OrderLeg] = []
         symbol = spread_plan["symbol"]
-        expiry = spread_plan.get("expiry")
-        legs = spread_plan.get("legs", [])
-        short_leg = next((leg for leg in legs if leg.get("side", "").lower() == "short"), None)
-        long_leg = next((leg for leg in legs if leg.get("side", "").lower() == "long"), None)
-
-        def _make_leg(leg_data: dict, side: str) -> Optional[OrderLeg]:
-            if not leg_data:
-                return None
-            strike = float(leg_data.get("strike", 0.0))
-            price = float(leg_data.get("mid") or leg_data.get("price") or 0.0)
-            option_type = leg_data.get("type", "put").upper()[0]
-            return OrderLeg(
-                symbol=symbol,
-                expiry=expiry or leg_data.get("expiry", ""),
-                strike=strike,
-                option_type=option_type,
-                side=side,
-                qty=qty,
-                price=price,
+        for leg in spread_plan.get("legs", []):
+            option_type = "C" if str(leg.get("type", "put")).lower().startswith("c") else "P"
+            legs.append(
+                OrderLeg(
+                    symbol=symbol,
+                    expiry=leg["expiry"],
+                    strike=float(leg["strike"]),
+                    option_type=option_type,
+                    side=leg["side"].upper(),
+                    qty=qty,
+                    price=float(leg.get("mid") or leg.get("price") or 0.0),
+                )
             )
 
-        legs_list: List[OrderLeg] = [
-            leg for leg in (_make_leg(short_leg, "SELL"), _make_leg(long_leg, "BUY")) if leg
-        ]
-        is_index = bool(spread_plan.get("is_index") or symbol.upper() in {"SPX", "XSP", "RUT", "NDX"})
         strategy = spread_plan.get("strategy", "PUT_CREDIT").upper()
-        width = float(spread_plan.get("width", 0.0))
-        credit = float(spread_plan.get("credit", 0.0))
-        notes = spread_plan.get("note") or spread_plan.get("rationale")
         return OrderPlan(
             strategy=f"{strategy}_SPREAD" if "SPREAD" not in strategy else strategy,
             underlying=symbol,
-            is_index=is_index,
-            legs=legs_list,
-            spread_width=width,
-            credit_per_spread=credit,
+            is_index=bool(
+                spread_plan.get("is_index")
+                or symbol.upper() in {"SPX", "XSP", "RUT", "NDX"}
+            ),
+            legs=legs,
+            spread_width=float(spread_plan.get("width", 0.0)),
+            credit_per_spread=float(spread_plan.get("credit", 0.0)),
             qty=qty,
-            notes=notes,
+            notes=spread_plan.get("note") or spread_plan.get("rationale"),
         )
 
     def build_order_plan(self, spread_plan: dict, qty: int) -> tuple[OrderPlan, OrderPreview, dict]:
