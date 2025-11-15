@@ -609,5 +609,72 @@ def vet_idea(idea_index: int, qty: int) -> None:
     click.echo(json.dumps(report, indent=2, default=str))
 
 
+@cli.command("ideas-vet")
+@click.option("-q", "--qty", type=int, default=1, show_default=True,
+              help="Qty to use for compliance/buying power checks")
+@click.option("--json-output", type=click.Path(dir_okay=False, writable=True), default=None,
+              help="Optional path to write a JSON vetting report")
+def ideas_vet(qty: int, json_output: Optional[str]) -> None:
+    """
+    Run all TradeIdeas from the last trade-ideas run through ComplianceAgent.
+
+    Example:
+      python -m stratdeck.cli trade-ideas --json-output .stratdeck/last_trade_ideas.json
+      python -m stratdeck.cli ideas-vet
+    """
+    ideas = load_last_ideas()
+    if not ideas:
+        raise click.ClickException("No TradeIdeas found. Run 'trade-ideas --json-output' first.")
+
+    trader, _ = _prepare_trader_agent()
+    report = []
+
+    for idx, idea in enumerate(ideas):
+        symbol = getattr(idea, "symbol", None) or getattr(idea, "underlying", None) or (
+            idea.get("symbol") if isinstance(idea, dict) else None
+        )
+        try:
+            res = trader.vet_idea(idea, qty=qty)
+            report.append({
+                "index": idx,
+                "symbol": symbol,
+                "allowed": res["allowed"],
+                "violations": res.get("violations", []),
+                "price": res["order_summary"].get("price"),
+                "est_bp_impact": res["order_summary"].get("est_bp_impact"),
+                "spread_plan": res["spread_plan"],
+            })
+        except Exception as exc:
+            report.append({
+                "index": idx,
+                "symbol": symbol,
+                "allowed": False,
+                "violations": [f"error: {exc}"],
+                "price": None,
+                "est_bp_impact": None,
+                "spread_plan": None,
+            })
+
+    if json_output:
+        path = Path(json_output)
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        click.echo(f"Wrote vetting report for {len(report)} ideas to {json_output}")
+        return
+
+    click.echo(f"Vetting {len(report)} ideas (qty={qty}):")
+    click.echo("")
+    click.echo(" idx  symbol   allowed   est_bp   reason")
+    click.echo("---- -------- --------- -------- -----------------------------------")
+    for row in report:
+        status = "OK" if row["allowed"] else "VETO"
+        reason = "; ".join(row["violations"]) if row["violations"] else ""
+        bp = row["est_bp_impact"]
+        bp_str = f"{bp:.2f}" if isinstance(bp, (int, float)) else "-"
+        sym = (row["symbol"] or "")[:8]
+        click.echo(f"{row['index']:>3}  {sym:<8} {status:<9} {bp_str:<8} {reason[:60]}")
+
+
 if __name__ == "__main__":
     cli()
