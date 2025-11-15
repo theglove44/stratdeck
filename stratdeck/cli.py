@@ -15,8 +15,6 @@ from .tools.chartist import ChartistAgent
 from .tools.scan_cache import store_scan_rows, store_trade_ideas
 from .tools.ta import load_last_scan
 from .tools.ideas import load_last_ideas
-from .trader import TraderAgent
-from .tools.ideas import load_last_ideas
 
 def _fmt_row(c: dict) -> str:
     # accepts POP/IVR as 0-1 or 0-100 and renders nicely
