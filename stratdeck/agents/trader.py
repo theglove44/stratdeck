@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from ..agents.compliance import ComplianceAgent
@@ -19,6 +20,7 @@ class TraderAgent:
         self.compliance = compliance or ComplianceAgent.from_config(cfg())
         self.journal = JournalAgent()
         self.provider = get_provider() if is_live_mode() else None
+        self.logger = logging.getLogger(__name__)
 
     def _resolve_expiry(self, leg: Dict[str, Any]) -> Optional[str]:
         for key in ("expiry", "exp", "expiration", "expiration_date"):
@@ -117,29 +119,62 @@ class TraderAgent:
         }
 
     def enter_trade(self, spread_plan: dict, qty: int, portfolio: Optional[dict] = None,
-                   confirm: bool = False, live_order: bool = False) -> dict:
+                    confirm: bool = False, live_order: bool = False) -> dict:
         order_plan, pv, summary = self.build_order_plan(spread_plan, qty)
-        comp_result = self.compliance.approve(plan=order_plan, preview=pv, candidate=spread_plan)
+        comp_result = self.compliance.approve(
+            plan=order_plan,
+            preview=pv,
+            candidate=spread_plan,
+        )
         compliance_summary = self._format_compliance(comp_result)
-        out = {"compliance": compliance_summary, "order_plan": summary}
-        if live_order and self.provider and compliance_summary["allowed"]:
-            tasty_order = self._to_tasty_order(order_plan, summary["price"])
-            try:
-                preview_resp = self.provider.preview_order(tasty_order)
-                out["broker_preview"] = preview_resp
-                if confirm:
-                    placed = self.provider.place_order(tasty_order)
-                    out["broker_order"] = placed
-            except Exception as exc:
-                out["broker_error"] = str(exc)
-        if compliance_summary["allowed"] and confirm:
-            fill = place(spread_plan, qty)
-            out["fill"] = fill
+
+        if not compliance_summary["allowed"]:
+            return {
+                "compliance": compliance_summary,
+                "order_plan": summary,
+            }
+
+        fill = None
+
+        if confirm:
+            if live_order and self.provider:
+                tasty_order = self._to_tasty_order(order_plan, summary["price"])
+                try:
+                    fill = self.provider.place_order(tasty_order)
+                except Exception as exc:
+                    self.logger.warning(
+                        "[orders] live place failed (%s); falling back to paper fill",
+                        exc,
+                    )
+            if fill is None:
+                fill = place(spread_plan, qty)
+
+            if fill:
+                out_fill = {
+                    "status": fill.get("status") if isinstance(fill, dict) else None,
+                    "position_id": fill.get("position_id") if isinstance(fill, dict) else getattr(fill, "position_id", None),
+                    "details": fill,
+                }
+            else:
+                out_fill = None
+
             pos = add_position(spread_plan, qty)
-            position_id = pos.get("id") or fill.get("position_id")
-            out["position_id"] = position_id
+            position_id = pos.get("id") or (out_fill["position_id"] if out_fill else None)
             self.journal.log_open(position_id, spread_plan, qty, summary.get("preview", {}))
-        return out
+        else:
+            out_fill = None
+
+        result = {
+            "compliance": compliance_summary,
+            "order_plan": summary,
+        }
+
+        if out_fill:
+            result["fill"] = out_fill
+            if out_fill.get("position_id"):
+                result["position_id"] = out_fill["position_id"]
+
+        return result
 
     def vet_idea(
         self,
