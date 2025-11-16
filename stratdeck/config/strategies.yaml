@@ -1,0 +1,144 @@
+# stratdeck/config/strategies.yaml
+
+# --- UNIVERSES -------------------------------------------------------------
+# Each universe describes:
+# - product_type: index / equity / etf / any
+# - source: where tickers come from (static, local_file, tasty_watchlist)
+
+universes:
+  index_core:
+    description: "Core index underlyings for SPX/XSP style strategies"
+    product_type: index
+    source:
+      type: static
+      tickers: [SPX, XSP]
+
+  equity_core:
+    description: "Liquid large-cap equities & ETFs from a Tastytrade watchlist"
+    product_type: equity
+    source:
+      type: tasty_watchlist
+      watchlist_name: "Equity Core"
+      max_symbols: 50
+
+  earnings_plays:
+    description: "Short-term earnings strategies from a local watchlist file"
+    product_type: equity
+    source:
+      type: local_file
+      path: "config/earnings_watchlist.yaml"  # relative to repo root or config dir
+
+
+# --- STRATEGY TEMPLATES ----------------------------------------------------
+# Each strategy template:
+# - name: internal id
+# - label: human-readable
+# - applies_to_universes: which universes to run this on
+# - product_type: index / equity / etf / any
+# - order_side: buy/sell (almost always sell)
+# - option_type: put/call/both
+# - dte: target / min / max
+# - delta: rules for short leg deltas
+# - width_rule: how wide spreads should be (derived from price or allowed widths)
+# - filters: POP, credit/width, IVR, etc.
+
+strategies:
+  - name: short_put_spread_index_45d
+    label: "Index Short Put Spread ~45 DTE"
+    enabled: true
+    applies_to_universes: [index_core]
+    product_type: index
+    order_side: sell
+    option_type: put
+
+    dte:
+      target: 45
+      min: 30
+      max: 60
+
+    delta:
+      short_leg:
+        target: 0.30   # aim around 20 delta
+        min: 0.25
+        max: 0.35
+
+    width_rule:
+      type: index_allowed
+      allowed: [1,5, 10, 25]   # SPX/XSP spread widths to consider
+      default: 5
+
+    filters:
+      min_pop: 0.50           # 50%
+      min_credit_per_width: 0.30   # e.g. 0.3 credit per $1 width
+      min_ivr: 0.15
+      max_ivr: 1.00
+
+
+  - name: short_put_spread_equity_45d
+    label: "Equity Short Put Spread ~45 DTE"
+    enabled: true
+    applies_to_universes: [equity_core]
+    product_type: equity
+    order_side: sell
+    option_type: put
+
+    dte:
+      target: 45
+      min: 30
+      max: 60
+
+    delta:
+      short_leg:
+        target: 0.25   # a bit more aggressive in equities
+        min: 0.15
+        max: 0.35
+
+    width_rule:
+      type: by_price_bracket
+      brackets:
+        - max_price: 50
+          width: 1
+        - max_price: 200
+          width: 2
+        - max_price: 500
+          width: 3
+        - max_price: null   # no upper bound
+          width: 5
+
+    filters:
+      min_pop: 0.50
+      min_credit_per_width: 0.30
+      min_ivr: 0.20
+      max_ivr: 0.90
+
+
+  - name: iron_condor_index_30d
+    label: "Index Iron Condor ~30 DTE"
+    enabled: true
+    applies_to_universes: [index_core]
+    product_type: index
+    order_side: sell
+    option_type: both   # short call spread + short put spread
+
+    dte:
+      target: 30
+      min: 20
+      max: 40
+
+    # For ICs we still care about short-leg delta band; width determines wings.
+    delta:
+      short_leg:
+        target: 0.20
+        min: 0.10
+        max: 0.30
+
+    width_rule:
+      type: index_allowed
+      allowed: [5, 10, 25]
+      default: 5
+
+    filters:
+      min_pop: 0.55
+      min_credit_per_width: 0.40
+      min_ivr: 0.30
+      max_ivr: 1.00
