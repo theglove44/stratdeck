@@ -1,8 +1,11 @@
 # stratdeck/cli.py
 import click
 import json
+import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
+from .orchestrator import Orchestrator, OrchestratorConfig
 from .agents.scout import ScoutAgent
 from .agents.trader import TraderAgent
 from .agents.risk import RiskAgent
@@ -675,6 +678,95 @@ def ideas_vet(qty: int, json_output: Optional[str]) -> None:
         sym = (row["symbol"] or "")[:8]
         click.echo(f"{row['index']:>3}  {sym:<8} {status:<9} {bp_str:<8} {reason[:60]}")
 
+@cli.command("auto")
+@click.option(
+    "--live/--paper",
+    default=False,
+    help="Route orders to live broker (default is paper-only).",
+)
+@click.option(
+    "--max-trades",
+    type=int,
+    default=1,
+    help="Maximum number of auto trades allowed per day (journal-based).",
+)
+@click.option(
+    "--min-pop",
+    type=float,
+    default=0.50,
+    help="Minimum probability of profit (0–1) for candidate selection.",
+)
+@click.option(
+    "--min-credit-per-width",
+    type=float,
+    default=0.30,
+    help="Minimum credit/width ratio for candidate selection.",
+)
+@click.option(
+    "--qty",
+    type=int,
+    default=1,
+    help="Contract quantity per trade.",
+)
+@click.option(
+    "--idea-json",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=Path(".stratdeck/last_trade_ideas.json"),
+    show_default=True,
+    help="Path where trade-ideas will write the ideas JSON.",
+)
+@click.option(
+    "--journal-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=Path(".stratdeck/auto_journal.csv"),
+    show_default=True,
+    help="Path to the auto-trade journal CSV.",
+)
+@click.option(
+    "--dry-run/--execute",
+    default=False,
+    help="If enabled, vet and rank only; do NOT call enter_from_idea.",
+)
+def auto(
+    live: bool,
+    max_trades: int,
+    min_pop: float,
+    min_credit_per_width: float,
+    qty: int,
+    idea_json: Path,
+    journal_path: Path,
+    dry_run: bool,
+) -> None:
+    """
+    Run a single auto-trading orchestration cycle.
+
+    - Regenerates ideas via `trade-ideas`.
+    - Vets and filters candidates using TraderAgent + Compliance.
+    - Ranks candidates and (optionally) enters a paper or live trade.
+    - Prints a JSON OrchestratorResult summary to stdout.
+    """
+    logger = logging.getLogger("stratdeck.auto")
+
+    config = OrchestratorConfig(
+        max_trades_per_day=max_trades,
+        min_pop=min_pop,
+        min_credit_per_width=min_credit_per_width,
+        default_qty=qty,
+        idea_json_path=idea_json,
+        journal_path=journal_path,
+        live=live,
+        dry_run=dry_run,
+    )
+
+    # Instantiate TraderAgent the same way you do elsewhere in CLI.
+    trader = TraderAgent()
+
+    orch = Orchestrator(trader=trader, config=config, logger=logger)
+    result = orch.run_once()
+
+    # JSON summary – ready for piping into logs or other tooling.
+    payload = result.to_dict()
+    click.echo(json.dumps(payload, indent=2, default=str))
 
 if __name__ == "__main__":
     cli()
