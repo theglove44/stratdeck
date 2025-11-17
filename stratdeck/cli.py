@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional
 from .orchestrator import Orchestrator, OrchestratorConfig
 from .agents.scout import ScoutAgent
 from .agents.trader import TraderAgent
@@ -12,6 +12,12 @@ from .agents.risk import RiskAgent
 from .agents.compliance import ComplianceAgent
 from .agents.trade_planner import TradePlanner
 from .core.config import cfg
+from .strategies import load_strategy_config
+from .strategy_engine import (
+    build_strategy_universe_assignments,
+    collect_symbols_from_assignments,
+    debug_print_assignments,
+)
 from .tools.account import is_live_mode, provider_account_summary, provider_positions_state
 from .data.factory import get_provider
 from .tools.chartist import ChartistAgent
@@ -45,6 +51,64 @@ def _prepare_trader_agent() -> tuple[TraderAgent, dict]:
     trader = TraderAgent(compliance=compliance)
     portfolio = {"mode": "live" if is_live_mode() else "mock", "positions_state": positions_state}
     return trader, portfolio
+
+
+def _resolve_tasty_watchlist(name: str, max_symbols: Optional[int]) -> List[str]:
+    """
+    Adapter between config 'tasty_watchlist' universes and your existing
+    Tastytrade watchlist API. For now this can be a stub.
+
+    Once ready, replace the body with a real call using your Tasty SDK,
+    e.g. tasty.get_watchlist(name).
+    """
+    # TODO: wire to real tastywatchlist helper.
+    # Example skeleton:
+    #
+    # from stratdeck.tools.tasty import get_watchlist_symbols
+    # symbols = get_watchlist_symbols(name)
+    # if max_symbols is not None:
+    #     symbols = symbols[:max_symbols]
+    # return symbols
+    #
+    # For now, to keep things safe and testable, just:
+    return []
+
+
+def _build_trade_ideas_for_symbols(
+    symbols: List[str],
+    strategy_hint: str,
+    dte_target: int,
+    max_per_symbol: int,
+) -> List[Any]:
+    scout = ScoutAgent()
+    scout.C["watchlist"] = symbols
+    chartist = ChartistAgent()
+    planner = TradePlanner()
+
+    base_results = scout.run()
+    if not base_results:
+        click.echo("Scout returned no candidates.", err=True)
+        return []
+
+    enriched = chartist.analyze_scout_batch(
+        scout_results=base_results,
+        default_strategy_hint=strategy_hint,
+    )
+    if not enriched:
+        click.echo("Chartist did not produce any TA-enriched rows.", err=True)
+        return []
+
+    ideas = planner.generate_from_scan_results(
+        scan_rows=enriched,
+        default_strategy=strategy_hint,
+        dte_target=dte_target,
+        max_per_symbol=max_per_symbol,
+    )
+    if not ideas:
+        click.echo("No trade ideas matched the current signals.", err=True)
+        return []
+
+    return ideas
 
 @click.group()
 def cli():
@@ -154,6 +218,18 @@ def monitor():
     risk = RiskAgent()
     for rec in risk.check_positions():
         print(rec)
+
+
+@cli.command("strategy-universes")
+def strategy_universes_cmd():
+    """
+    Dump Strategy × Universe assignments from strategies.yaml.
+
+    This is a debug helper to verify config wiring before we
+    plug it into the full trade-ideas engine.
+    """
+    # For now we don't wire tasty here; static & local_file only.
+    debug_print_assignments()
 
 @cli.command()
 @click.option("--daily", is_flag=True, help="Shortcut for --days 1")
@@ -463,6 +539,18 @@ def scan_ta(strategy_hint, timeframe, lookback_bars, json_output):
     help="Maximum number of ideas per symbol.",
 )
 @click.option(
+    "--universe",
+    "universe_filters",
+    multiple=True,
+    help="Limit scan to specific universes (e.g. --universe index_core).",
+)
+@click.option(
+    "--strategy",
+    "strategy_filters",
+    multiple=True,
+    help="Limit scan to specific strategies (e.g. --strategy iron_condor_index_30d).",
+)
+@click.option(
     "--json-output",
     is_flag=True,
     help="Emit raw TradeIdea structures as JSON instead of formatted text.",
@@ -472,35 +560,63 @@ def scan_ta(strategy_hint, timeframe, lookback_bars, json_output):
     required=False,
     type=click.Path(dir_okay=False, writable=True),
 )
-def trade_ideas(strategy_hint, dte_target, max_per_symbol, json_output, output_path):
+def trade_ideas(
+    strategy_hint,
+    dte_target,
+    max_per_symbol,
+    universe_filters: tuple[str, ...],
+    strategy_filters: tuple[str, ...],
+    json_output,
+    output_path,
+):
     """
     Generate structured trade ideas using Scout → Chartist → TradePlanner pipeline.
     """
-    scout = ScoutAgent()
-    chartist = ChartistAgent()
-    planner = TradePlanner()
+    strategy_cfg = load_strategy_config()
 
-    base_results = scout.run()
-    if not base_results:
-        click.echo("Scout returned no candidates.", err=True)
-        return
-
-    enriched = chartist.analyze_scout_batch(
-        scout_results=base_results,
-        default_strategy_hint=strategy_hint,
+    assignments = build_strategy_universe_assignments(
+        cfg=strategy_cfg,
+        tasty_watchlist_resolver=_resolve_tasty_watchlist,
     )
-    if not enriched:
-        click.echo("Chartist did not produce any TA-enriched rows.", err=True)
+
+    if universe_filters:
+        universe_filter_set = {u.strip() for u in universe_filters}
+        assignments = [
+            a for a in assignments if a.universe.name in universe_filter_set
+        ]
+
+    if strategy_filters:
+        strategy_filter_set = {s.strip() for s in strategy_filters}
+        assignments = [
+            a for a in assignments if a.strategy.name in strategy_filter_set
+        ]
+
+    if not assignments:
+        click.echo(
+            "No matching strategy/universe assignments. Check filters/config.",
+            err=True,
+        )
         return
 
-    ideas = planner.generate_from_scan_results(
-        scan_rows=enriched,
-        default_strategy=strategy_hint,
+    symbols = collect_symbols_from_assignments(assignments)
+    if not symbols:
+        click.echo("No symbols resolved from selected universes.", err=True)
+        return
+
+    click.echo(
+        "[trade-ideas] Running scan for "
+        f"{len(symbols)} symbols: "
+        + ", ".join(symbols[:20])
+        + (" ..." if len(symbols) > 20 else "")
+    )
+
+    ideas = _build_trade_ideas_for_symbols(
+        symbols=symbols,
+        strategy_hint=strategy_hint,
         dte_target=dte_target,
         max_per_symbol=max_per_symbol,
     )
     if not ideas:
-        click.echo("No trade ideas matched the current signals.", err=True)
         return
 
     store_trade_ideas(ideas)

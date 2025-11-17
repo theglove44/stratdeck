@@ -26,7 +26,7 @@ universes:
     product_type: equity
     source:
       type: local_file
-      path: "config/earnings_watchlist.yaml"  # relative to repo root or config dir
+      path: "stratdeck/config/earnings_watchlist.yaml"  # relative to repo root
 
 
 # --- STRATEGY TEMPLATES ----------------------------------------------------
@@ -115,7 +115,7 @@ strategies:
   - name: iron_condor_index_30d
     label: "Index Iron Condor ~30 DTE"
     enabled: true
-    applies_to_universes: [index_core]
+    applies_to_universes: [index_core, earnings_plays]
     product_type: index
     order_side: sell
     option_type: both   # short call spread + short put spread

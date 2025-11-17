@@ -1,0 +1,13 @@
+# config/earnings_watchlist.yaml
+tickers:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - RBLX
+  - GLD
+  - INTC
+  - AMD
+  - TSLA
+  - SMH
