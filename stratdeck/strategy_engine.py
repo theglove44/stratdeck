@@ -36,6 +36,35 @@ class StrategyUniverseAssignment:
     symbols: List[str]
 
 
+@dataclass
+class SymbolStrategyTask:
+    """
+    A single (symbol, strategy, universe) task for the trade-ideas engine.
+    This is what the idea engine will ultimately iterate over.
+    """
+
+    symbol: str
+    strategy: StrategyTemplate
+    universe: UniverseConfig
+
+
+
+def build_symbol_strategy_tasks(
+    assignments: Sequence[StrategyUniverseAssignment],
+) -> List[SymbolStrategyTask]:
+    tasks: List[SymbolStrategyTask] = []
+    for a in assignments:
+        for sym in a.symbols:
+            tasks.append(
+                SymbolStrategyTask(
+                    symbol=sym,
+                    strategy=a.strategy,
+                    universe=a.universe,
+                )
+            )
+    return tasks
+
+
 # ---------------------------------------------------------------------------
 # Universe resolution
 # ---------------------------------------------------------------------------
@@ -231,24 +260,43 @@ def build_strategy_universe_assignments(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Convenience: expand assignments into tasks / symbols
+# ---------------------------------------------------------------------------
+
+def build_symbol_strategy_tasks(
+    assignments: Sequence[StrategyUniverseAssignment],
+) -> List[SymbolStrategyTask]:
+    """
+    Expand StrategyUniverseAssignment objects into a flat list of
+    (symbol, strategy, universe) tasks for the trade-ideas engine.
+    """
+    tasks: List[SymbolStrategyTask] = []
+    for a in assignments:
+        for sym in a.symbols:
+            tasks.append(
+                SymbolStrategyTask(
+                    symbol=str(sym).upper(),
+                    strategy=a.strategy,
+                    universe=a.universe,
+                )
+            )
+    return tasks
+
+
 def collect_symbols_from_assignments(
     assignments: List[StrategyUniverseAssignment],
 ) -> List[str]:
     """
     Flatten StrategyUniverseAssignment list into a sorted, de-duplicated
-    symbol list for scan-style workflows (trade-ideas).
-
-    This is deliberately dumb: it ignores which strategy/universe a
-    symbol came from. Later, if you want per-strategy idea shaping,
-    we can keep the structure and pass StrategyTemplate into the
-    idea builder.
+    symbol list for scan-style workflows (legacy trade-ideas path).
     """
-    unique: set[str] = set()
+    symbol_set = set()
     for a in assignments:
         for sym in a.symbols:
-            unique.add(sym.upper())
+            symbol_set.add(str(sym).upper())
+    return sorted(symbol_set)
 
-    return sorted(unique)
 
 
 # ---------------------------------------------------------------------------

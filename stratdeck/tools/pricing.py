@@ -24,6 +24,10 @@ def credit_for_vertical(vert: Dict) -> float:
     credit = round(max(short_mid - long_mid, 0.01), 2)
     return credit
 
+def vertical_credit(vert: Dict) -> float:
+    """Legacy alias expected by chain_pricing_adapter."""
+    return credit_for_vertical(vert)
+
 def pop_estimate(vert: Dict, target_delta: float) -> float:
     """
     POP heuristic = 1 - short_delta with a tiny cushion if width is generous.

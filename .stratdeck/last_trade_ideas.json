@@ -3,405 +3,66 @@
     "symbol": "SPX",
     "data_symbol": "^GSPC",
     "trade_symbol": "SPX",
-    "strategy": "short_call_spread",
-    "direction": "bearish",
-    "vol_context": "normal",
-    "rationale": "SPX: slightly_bearish with upside resistance zones \u2013 bearish short call spread structured above key resistance.",
+    "strategy": "short_put_spread",
+    "direction": "bullish",
+    "vol_context": "elevated",
+    "rationale": "SPX: neutral with downside levels providing support \u2013 bullish short put spread structured below key support.",
     "legs": [
       {
         "side": "short",
-        "type": "call",
-        "strike": 6757.6298828125,
+        "type": "put",
+        "strike": 6732.990234375,
         "expiry": "45DTE",
         "quantity": 1
       },
       {
         "side": "long",
-        "type": "call",
-        "strike": 6825.136633300781,
+        "type": "put",
+        "strike": 6727.990234375,
         "expiry": "45DTE",
         "quantity": 1
       }
     ],
     "underlying_price_hint": 6750.675048828125,
     "dte_target": 45,
-    "spread_width": 67.50675048828126,
+    "spread_width": 5.0,
     "target_delta": 0.2,
     "notes": [
-      "Trend regime: downtrend, TA bias: -0.11, vol regime: normal.",
-      "Volatility context (for options): normal."
-    ]
-  },
-  {
-    "symbol": "IWM",
-    "data_symbol": "IWM",
-    "trade_symbol": "IWM",
-    "strategy": "short_call_spread",
-    "direction": "bearish",
-    "vol_context": "normal",
-    "rationale": "IWM: slightly_bearish with upside resistance zones \u2013 bearish short call spread structured above key resistance.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "call",
-        "strike": 242.14500427246094,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "call",
-        "strike": 244.54322929382323,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 239.82250213623047,
-    "dte_target": 45,
-    "spread_width": 2.398225021362305,
-    "target_delta": 0.2,
-    "notes": [
-      "Trend regime: downtrend, TA bias: -0.11, vol regime: normal.",
-      "Volatility context (for options): normal."
-    ]
-  },
-  {
-    "symbol": "QQQ",
-    "data_symbol": "QQQ",
-    "trade_symbol": "QQQ",
-    "strategy": "short_call_spread",
-    "direction": "bearish",
-    "vol_context": "normal",
-    "rationale": "QQQ: slightly_bearish with upside resistance zones \u2013 bearish short call spread structured above key resistance.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "call",
-        "strike": 616.1300048828125,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "call",
-        "strike": 622.2782827758789,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 614.8277893066406,
-    "dte_target": 45,
-    "spread_width": 6.148277893066407,
-    "target_delta": 0.2,
-    "notes": [
-      "Trend regime: downtrend, TA bias: -0.11, vol regime: normal.",
-      "Volatility context (for options): normal."
+      "Trend regime: downtrend, TA bias: 0.07, vol regime: expansion.",
+      "Volatility context (for options): elevated."
     ]
   },
   {
     "symbol": "XSP",
     "data_symbol": "^GSPC",
     "trade_symbol": "XSP",
-    "strategy": "short_call_spread",
-    "direction": "bearish",
-    "vol_context": "normal",
-    "rationale": "XSP: slightly_bearish with upside resistance zones \u2013 bearish short call spread structured above key resistance.",
+    "strategy": "short_put_spread",
+    "direction": "bullish",
+    "vol_context": "elevated",
+    "rationale": "XSP: neutral with downside levels providing support \u2013 bullish short put spread structured below key support.",
     "legs": [
       {
         "side": "short",
-        "type": "call",
-        "strike": 6757.6298828125,
+        "type": "put",
+        "strike": 6732.990234375,
         "expiry": "45DTE",
         "quantity": 1
       },
       {
         "side": "long",
-        "type": "call",
-        "strike": 6825.136633300781,
+        "type": "put",
+        "strike": 6727.990234375,
         "expiry": "45DTE",
         "quantity": 1
       }
     ],
     "underlying_price_hint": 6750.675048828125,
     "dte_target": 45,
-    "spread_width": 67.50675048828126,
+    "spread_width": 5.0,
     "target_delta": 0.2,
     "notes": [
-      "Trend regime: downtrend, TA bias: -0.11, vol regime: normal.",
-      "Volatility context (for options): normal."
-    ]
-  },
-  {
-    "symbol": "GLD",
-    "data_symbol": "GLD",
-    "trade_symbol": "GLD",
-    "strategy": "iron_condor",
-    "direction": "neutral",
-    "vol_context": "elevated",
-    "rationale": "GLD: range / non-trending conditions with elevated volatility \u2013 structure favours short premium in both directions.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "put",
-        "strike": 370.8900146484375,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "put",
-        "strike": 367.1421646118164,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "short",
-        "type": "call",
-        "strike": 378.556640625,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "call",
-        "strike": 382.3044906616211,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 374.7850036621094,
-    "dte_target": 45,
-    "spread_width": 3.747850036621094,
-    "target_delta": 0.2,
-    "notes": [
-      "Using support near 384.83 and resistance near 365.74 as anchors for IC wings.",
-      "Trend regime: downtrend, TA bias: -0.01, vol regime: expansion.",
+      "Trend regime: downtrend, TA bias: 0.07, vol regime: expansion.",
       "Volatility context (for options): elevated."
-    ]
-  },
-  {
-    "symbol": "NVDA",
-    "data_symbol": "NVDA",
-    "trade_symbol": "NVDA",
-    "strategy": "iron_condor",
-    "direction": "neutral",
-    "vol_context": "normal",
-    "rationale": "NVDA: range / non-trending conditions with normal volatility \u2013 structure favours short premium in both directions.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "put",
-        "strike": 191.3800048828125,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "put",
-        "strike": 189.44325492858886,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "short",
-        "type": "call",
-        "strike": 193.89999389648438,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "call",
-        "strike": 195.83674385070802,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 193.67499542236328,
-    "dte_target": 45,
-    "spread_width": 1.9367499542236328,
-    "target_delta": 0.2,
-    "notes": [
-      "Using support near 200.79 and resistance near 187.23 as anchors for IC wings.",
-      "Trend regime: choppy_trend, TA bias: 0.07, vol regime: normal.",
-      "Volatility context (for options): normal."
-    ]
-  },
-  {
-    "symbol": "TSLA",
-    "data_symbol": "TSLA",
-    "trade_symbol": "TSLA",
-    "strategy": "iron_condor",
-    "direction": "neutral",
-    "vol_context": "normal",
-    "rationale": "TSLA: range / non-trending conditions with normal volatility \u2013 structure favours short premium in both directions.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "put",
-        "strike": 426.55999755859375,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "put",
-        "strike": 422.292491607666,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "short",
-        "type": "call",
-        "strike": 432.5399932861328,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "call",
-        "strike": 436.80749923706054,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 426.75059509277344,
-    "dte_target": 45,
-    "spread_width": 4.267505950927735,
-    "target_delta": 0.2,
-    "notes": [
-      "Using support near 447.70 and resistance near 412.19 as anchors for IC wings.",
-      "Trend regime: downtrend, TA bias: 0.01, vol regime: normal.",
-      "Volatility context (for options): normal."
-    ]
-  },
-  {
-    "symbol": "AMZN",
-    "data_symbol": "AMZN",
-    "trade_symbol": "AMZN",
-    "strategy": "iron_condor",
-    "direction": "neutral",
-    "vol_context": "normal",
-    "rationale": "AMZN: range / non-trending conditions with normal volatility \u2013 structure favours short premium in both directions.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "put",
-        "strike": 243.92999267578125,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "put",
-        "strike": 241.48539268493653,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "short",
-        "type": "call",
-        "strike": 245.5399932861328,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "call",
-        "strike": 247.98459327697753,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 244.45999908447266,
-    "dte_target": 45,
-    "spread_width": 2.4445999908447265,
-    "target_delta": 0.2,
-    "notes": [
-      "Using support near 249.65 and resistance near 238.73 as anchors for IC wings.",
-      "Trend regime: downtrend, TA bias: 0.01, vol regime: normal.",
-      "Volatility context (for options): normal."
-    ]
-  },
-  {
-    "symbol": "AAPL",
-    "data_symbol": "AAPL",
-    "trade_symbol": "AAPL",
-    "strategy": "short_put_spread",
-    "direction": "bullish",
-    "vol_context": "expansion_likely",
-    "rationale": "AAPL: slightly_bullish with downside levels providing support \u2013 bullish short put spread structured below key support.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "put",
-        "strike": 270.3900146484375,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "put",
-        "strike": 267.67261962890626,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 271.739501953125,
-    "dte_target": 45,
-    "spread_width": 2.71739501953125,
-    "target_delta": 0.2,
-    "notes": [
-      "Trend regime: choppy_trend, TA bias: 0.13, vol regime: compression.",
-      "Volatility context (for options): expansion_likely."
-    ]
-  },
-  {
-    "symbol": "GOOGL",
-    "data_symbol": "GOOGL",
-    "trade_symbol": "GOOGL",
-    "strategy": "iron_condor",
-    "direction": "neutral",
-    "vol_context": "normal",
-    "rationale": "GOOGL: range / non-trending conditions with normal volatility \u2013 structure favours short premium in both directions.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "put",
-        "strike": 281.1400146484375,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "put",
-        "strike": 278.32663955688474,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "short",
-        "type": "call",
-        "strike": 284.885009765625,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "call",
-        "strike": 287.69838485717776,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 281.33750915527344,
-    "dte_target": 45,
-    "spread_width": 2.8133750915527345,
-    "target_delta": 0.2,
-    "notes": [
-      "Using support near 287.32 and resistance near 278.56 as anchors for IC wings.",
-      "Trend regime: downtrend, TA bias: -0.07, vol regime: normal.",
-      "Volatility context (for options): normal."
     ]
   }
 ]

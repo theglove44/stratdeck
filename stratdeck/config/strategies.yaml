@@ -68,11 +68,9 @@ strategies:
       default: 5
 
     filters:
-      min_pop: 0.50           # 50%
-      min_credit_per_width: 0.30   # e.g. 0.3 credit per $1 width
-      min_ivr: 0.15
-      max_ivr: 1.00
-
+      min_pop: 0.55           # 50%
+    #  min_credit_per_width: 0.05  # e.g. 0.3 credit per $1 width
+      min_ivr: 0.20
 
   - name: short_put_spread_equity_45d
     label: "Equity Short Put Spread ~45 DTE"
