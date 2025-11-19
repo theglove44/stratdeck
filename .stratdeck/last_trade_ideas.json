@@ -1,68 +1,76 @@
 [
   {
-    "symbol": "SPX",
-    "data_symbol": "^GSPC",
-    "trade_symbol": "SPX",
-    "strategy": "short_put_spread",
-    "direction": "bullish",
-    "vol_context": "elevated",
-    "rationale": "SPX: neutral with downside levels providing support \u2013 bullish short put spread structured below key support.",
-    "legs": [
-      {
-        "side": "short",
-        "type": "put",
-        "strike": 6732.990234375,
-        "expiry": "45DTE",
-        "quantity": 1
-      },
-      {
-        "side": "long",
-        "type": "put",
-        "strike": 6727.990234375,
-        "expiry": "45DTE",
-        "quantity": 1
-      }
-    ],
-    "underlying_price_hint": 6750.675048828125,
-    "dte_target": 45,
-    "spread_width": 5.0,
-    "target_delta": 0.2,
-    "notes": [
-      "Trend regime: downtrend, TA bias: 0.07, vol regime: expansion.",
-      "Volatility context (for options): elevated."
-    ]
-  },
-  {
     "symbol": "XSP",
     "data_symbol": "^GSPC",
     "trade_symbol": "XSP",
     "strategy": "short_put_spread",
     "direction": "bullish",
-    "vol_context": "elevated",
-    "rationale": "XSP: neutral with downside levels providing support \u2013 bullish short put spread structured below key support.",
+    "vol_context": "expansion_likely",
+    "rationale": "XSP: slightly_bullish with downside levels providing support \u2013 bullish short put spread structured below key support.",
     "legs": [
       {
         "side": "short",
         "type": "put",
-        "strike": 6732.990234375,
+        "strike": 92.96412906350767,
         "expiry": "45DTE",
         "quantity": 1
       },
       {
         "side": "long",
         "type": "put",
-        "strike": 6727.990234375,
+        "strike": 87.96412906350767,
         "expiry": "45DTE",
         "quantity": 1
       }
     ],
-    "underlying_price_hint": 6750.675048828125,
+    "underlying_price_hint": 93.59483255896276,
     "dte_target": 45,
     "spread_width": 5.0,
     "target_delta": 0.2,
     "notes": [
-      "Trend regime: downtrend, TA bias: 0.07, vol regime: expansion.",
-      "Volatility context (for options): elevated."
-    ]
+      "Trend regime: choppy_trend, TA bias: 0.39, vol regime: compression.",
+      "Volatility context (for options): expansion_likely.",
+      "[provenance] template=short_put_spread_index_45d universe=index_core"
+    ],
+    "pop": 0.56,
+    "credit_per_width": 0.002,
+    "estimated_credit": 0.01
+  },
+  {
+    "symbol": "SPX",
+    "data_symbol": "^GSPC",
+    "trade_symbol": "SPX",
+    "strategy": "short_put_spread",
+    "direction": "bullish",
+    "vol_context": "normal",
+    "rationale": "SPX: neutral with downside levels providing support \u2013 bullish short put spread structured below key support.",
+    "legs": [
+      {
+        "side": "short",
+        "type": "put",
+        "strike": 103.0941469001661,
+        "expiry": "45DTE",
+        "quantity": 1
+      },
+      {
+        "side": "long",
+        "type": "put",
+        "strike": 98.0941469001661,
+        "expiry": "45DTE",
+        "quantity": 1
+      }
+    ],
+    "underlying_price_hint": 103.14741022441977,
+    "dte_target": 45,
+    "spread_width": 5.0,
+    "target_delta": 0.2,
+    "notes": [
+      "Trend regime: uptrend, TA bias: -0.00, vol regime: normal.",
+      "Volatility context (for options): normal.",
+      "[provenance] template=short_put_spread_index_45d universe=index_core"
+    ],
+    "pop": 0.96,
+    "credit_per_width": 0.002,
+    "estimated_credit": 0.01
   }
 ]

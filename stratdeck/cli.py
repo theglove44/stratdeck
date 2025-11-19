@@ -34,6 +34,8 @@ from .tools.scan_cache import (
 from .tools.ta import load_last_scan
 from .tools.ideas import load_last_ideas
 
+LAST_TRADE_IDEAS_PATH = Path(".stratdeck/last_trade_ideas.json")
+
 
 def _fmt_row(c: dict) -> str:
     # accepts POP/IVR as 0-1 or 0-100 and renders nicely
@@ -755,12 +757,16 @@ def trade_ideas(
 
     symbols = sorted({t.symbol for t in tasks})
 
-    click.echo(
+    scan_banner = (
         "[trade-ideas] Running scan for "
         f"{len(symbols)} symbols: "
         + ", ".join(symbols[:20])
         + (" ..." if len(symbols) > 20 else "")
     )
+    if json_output:
+        click.echo(scan_banner, err=True)
+    else:
+        click.echo(scan_banner)
 
     ideas = _build_trade_ideas_for_tasks(
         tasks=tasks,
@@ -819,6 +825,100 @@ def trade_ideas(
     click.echo(
         "\nTip: re-run with --json-output to feed into TraderAgent or other tools."
     )
+
+
+@cli.command("enter-auto")
+@click.option(
+    "--qty",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Number of spreads/contracts to open.",
+)
+@click.option(
+    "--confirm/--no-confirm",
+    default=False,
+    show_default=True,
+    help="Ask for confirmation before placing the order.",
+)
+@click.option(
+    "--live",
+    "live_order",
+    is_flag=True,
+    help="Place the order in LIVE mode instead of paper.",
+)
+def enter_auto(qty: int, confirm: bool, live_order: bool) -> None:
+    """
+    Enter the best-ranked trade idea from the last trade-ideas scan
+    using TraderAgent's POP/credit_per_width scoring.
+    """
+    # 1. Load last_trade_ideas.json
+    if not LAST_TRADE_IDEAS_PATH.exists():
+        raise click.ClickException(
+            f"No trade ideas found. Run 'python -m stratdeck.cli trade-ideas' first "
+            f"to generate {LAST_TRADE_IDEAS_PATH}."
+        )
+
+    try:
+        with LAST_TRADE_IDEAS_PATH.open("r", encoding="utf-8") as f:
+            ideas = json.load(f)
+    except Exception as exc:
+        raise click.ClickException(
+            f"Failed to load trade ideas from {LAST_TRADE_IDEAS_PATH}: {exc}"
+        ) from exc
+
+    if not isinstance(ideas, list) or not ideas:
+        raise click.ClickException(
+            f"{LAST_TRADE_IDEAS_PATH} does not contain a non-empty list of ideas."
+        )
+
+    # 2. Instantiate TraderAgent
+    agent = TraderAgent()
+
+    # 3. Use POP/credit_per_width-based ranking to pick the best idea
+    try:
+        best_idea = agent.pick_best_trade_idea(ideas)
+    except ValueError as exc:
+        # This happens if all ideas fail POP/credit filters
+        raise click.ClickException(str(exc)) from exc
+
+    # 4. Send the chosen idea through the normal enter flow
+    result = agent.enter_from_idea(
+        best_idea,
+        qty=qty,
+        confirm=confirm,
+        live_order=live_order,
+        portfolio=None,
+    )
+
+    # 5. Print a concise summary
+    click.echo("=== Enter Auto Result ===")
+    allowed = result.get("allowed") or result.get("compliance", {}).get("allowed")
+    click.echo(f"Allowed: {allowed}")
+
+    if "spread_plan" in result:
+        sp = result["spread_plan"]
+        sym = sp.get("symbol")
+        credit = sp.get("credit")
+        pop = sp.get("pop")
+        cpw = sp.get("credit_per_width") or sp.get("credit_per_spread")
+        click.echo(f"Symbol: {sym}")
+        if pop is not None:
+            click.echo(f"POP: {pop:.3f}")
+        if cpw is not None:
+            click.echo(f"Credit/Width: {cpw:.4f}")
+        if credit is not None:
+            click.echo(f"Estimated Credit: {credit}")
+
+    violations = (
+        result.get("violations")
+        or result.get("compliance", {}).get("reasons")
+        or []
+    )
+    if violations:
+        click.echo("Compliance violations:")
+        for v in violations:
+            click.echo(f"- {v}")
 
 
 @cli.command("enter-from-idea")

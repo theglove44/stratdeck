@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from ..agents.compliance import ComplianceAgent
@@ -13,6 +14,20 @@ from ..tools.account import is_live_mode
 from ..data.factory import get_provider
 from ..tools.positions import add_position
 from ..tools.pricing import credit_for_vertical, pop_estimate
+
+DEBUG_TRADER_RANKING = os.getenv("STRATDECK_DEBUG_TRADER_RANKING") == "1"
+
+# POP / credit-per-width based ranking defaults.
+# Tune these once you see real chain-based metrics in your JSON.
+MIN_POP = 0.55
+MIN_CREDIT_PER_WIDTH = 0.15
+MAX_CREDIT_PER_WIDTH = 0.45
+TARGET_DTE = 45
+MAX_DTE_DEVIATION = 10
+
+POP_WEIGHT = 0.6
+CPW_WEIGHT = 0.4
+DTE_WEIGHT = 0.2
 
 
 class TraderAgent:
@@ -313,6 +328,151 @@ class TraderAgent:
         spread_plan["source"] = _get("source", default="scanner")
 
         return spread_plan
+
+
+    # --- POP / credit_per_width ranking helpers for TradeIdeas ---
+
+        # --- POP / credit_per_width ranking helpers for TradeIdeas ---
+
+    def _idea_metric(self, idea: Any, key: str) -> Optional[float]:
+        """Best-effort extraction of a numeric metric from a TradeIdea or dict."""
+        if hasattr(idea, key):
+            val = getattr(idea, key)
+            if val is not None:
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    pass
+        if isinstance(idea, dict) and key in idea and idea[key] is not None:
+            try:
+                return float(idea[key])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _compute_tasty_score(
+        self,
+        idea: Any,
+        cpw_min: float,
+        cpw_max: float,
+    ) -> Optional[float]:
+        """Composite score based on POP, credit_per_width, and DTE proximity.
+
+        Returns None if the idea fails hard filters.
+        """
+        pop = self._idea_metric(idea, "pop")
+        cpw = self._idea_metric(idea, "credit_per_width")
+        dte_target = self._idea_metric(idea, "dte_target")
+
+        if pop is None or cpw is None:
+            if DEBUG_TRADER_RANKING:
+                self.logger.debug("skip idea %r: missing pop/credit_per_width", idea)
+            return None
+
+        # ---- HARD FILTERS ----
+        # Only POP is a hard gate for now.
+        if pop < MIN_POP:
+            if DEBUG_TRADER_RANKING:
+                self.logger.debug("skip idea %r: POP %.3f < %.3f", idea, pop, MIN_POP)
+            return None
+
+        # ---- POP score: map [0.50, 0.70] -> [0, 1] (clamped) ----
+        pop_score = (pop - 0.50) / 0.20
+        pop_score = max(0.0, min(pop_score, 1.0))
+
+        # ---- CPW score: dynamic scaling based on this batch of ideas ----
+        if cpw_max > cpw_min and cpw > 0:
+            cpw_score = (cpw - cpw_min) / (cpw_max - cpw_min)
+            cpw_score = max(0.0, min(cpw_score, 1.0))
+        else:
+            # If all cpw are equal or we couldn't get a sensible range,
+            # treat them as neutral and let POP / DTE dominate.
+            cpw_score = 0.5
+
+        # ---- DTE score: how close to TARGET_DTE ----
+        if dte_target is not None:
+            delta_dte = abs(dte_target - TARGET_DTE)
+            if delta_dte >= MAX_DTE_DEVIATION:
+                dte_score = 0.0
+            else:
+                dte_score = 1.0 - (delta_dte / MAX_DTE_DEVIATION)
+        else:
+            dte_score = 0.0
+
+        score = (
+            POP_WEIGHT * pop_score +
+            CPW_WEIGHT * cpw_score +
+            DTE_WEIGHT * dte_score
+        )
+
+        if DEBUG_TRADER_RANKING:
+            self.logger.debug(
+                "idea %r -> score=%.4f (pop=%.3f, cpw=%.6f, cpw_range=[%.6f, %.6f], dte=%s)",
+                idea,
+                score,
+                pop,
+                cpw,
+                cpw_min,
+                cpw_max,
+                dte_target,
+            )
+
+        return score
+
+    def rank_trade_ideas(self, ideas: List[Any]) -> List[tuple[Any, float]]:
+        """Return list of (idea, score) sorted best-first using tasty-style metrics."""
+
+        # First pass: find CPW range for ideas that at least pass POP.
+        cpw_values: List[float] = []
+        for idea in ideas:
+            pop = self._idea_metric(idea, "pop")
+            cpw = self._idea_metric(idea, "credit_per_width")
+
+            if pop is None or cpw is None:
+                continue
+            if pop < MIN_POP:
+                continue
+            if cpw > 0:
+                cpw_values.append(cpw)
+
+        if cpw_values:
+            cpw_min = min(cpw_values)
+            cpw_max = max(cpw_values)
+        else:
+            cpw_min = 0.0
+            cpw_max = 0.0
+
+        if DEBUG_TRADER_RANKING:
+            self.logger.debug(
+                "ranking %d ideas; POP gate=%.2f; cpw_range=[%.6f, %.6f]",
+                len(ideas),
+                MIN_POP,
+                cpw_min,
+                cpw_max,
+            )
+
+        # Second pass: compute scores.
+        ranked: List[tuple[Any, float]] = []
+        for idea in ideas:
+            score = self._compute_tasty_score(idea, cpw_min, cpw_max)
+            if score is None:
+                continue
+            ranked.append((idea, score))
+
+        ranked.sort(key=lambda pair: pair[1], reverse=True)
+        return ranked
+
+    def pick_best_trade_idea(self, ideas: List[Any]) -> Any:
+        """Select the top-ranked idea or raise if none survive filters."""
+        ranked = self.rank_trade_ideas(ideas)
+        if not ranked:
+            raise ValueError("No trade ideas passed POP filters.")
+
+        best_idea, best_score = ranked[0]
+        if DEBUG_TRADER_RANKING:
+            self.logger.info("picked idea %r with score %.4f", best_idea, best_score)
+        return best_idea
+
 
 
     def _to_tasty_order(self, order_plan: OrderPlan, price: float) -> Dict[str, Any]:

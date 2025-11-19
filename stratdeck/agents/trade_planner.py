@@ -5,9 +5,11 @@ from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import logging
 import os
+import sys
 from ..tools.ta import resolve_symbols
 from ..strategy_engine import SymbolStrategyTask, choose_width, choose_target_dte
 from ..tools.chain_pricing_adapter import ChainPricingAdapter
+from pydantic import BaseModel
 
 
 log = logging.getLogger(__name__)
@@ -58,6 +60,10 @@ class TradeIdea:
     spread_width: Optional[float] = None
     target_delta: Optional[float] = None
     notes: List[str] = None
+    # NEW: chain-based metrics for TraderAgent / selection logic
+    pop: Optional[float] = None
+    credit_per_width: Optional[float] = None
+    estimated_credit: Optional[float] = None  # total net credit for the structure
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -309,9 +315,10 @@ class TradePlanner:
             # If you don't have these, you can drop this block or adapt it.
             ivr = row.get("iv_rank") or row.get("iv_rank_1y") or row.get("iv_rank_1yr")
 
-        # --- Chain-based metrics (POP, credit_per_width) --------------------
+        # --- Chain-based metrics (POP, credit_per_width, estimated_credit) -
         pop: Optional[float] = None
         credit_per_width: Optional[float] = None
+        estimated_credit: Optional[float] = None
 
         if self.chains_client is not None:
             price_fn = getattr(self.chains_client, "price_structure", None)
@@ -339,6 +346,7 @@ class TradePlanner:
                 if pricing:
                     pop = pricing.get("pop", pop)
                     credit_per_width = pricing.get("credit_per_width", credit_per_width)
+                    estimated_credit = pricing.get("credit", estimated_credit)
 
         candidate: Dict[str, Any] = {
             "symbol": symbol,
@@ -349,10 +357,11 @@ class TradePlanner:
             "pop": pop,
             "ivr": ivr,
             "credit_per_width": credit_per_width,
+            "estimated_credit": estimated_credit,
         }
         
         if DEBUG_FILTERS:
-            print("[trade-ideas] candidate before filters:", candidate)
+            print("[trade-ideas] candidate before filters:", candidate, file=sys.stderr)
 
         if not self._passes_strategy_filters(candidate, task.strategy):
             return None
@@ -371,8 +380,13 @@ class TradePlanner:
             spread_width=spread_width,
             target_delta=0.20,
             notes=notes,
+            # NEW: expose chain-based metrics to TraderAgent
+            pop=pop,
+            credit_per_width=credit_per_width,
+            estimated_credit=estimated_credit,
         )
         return idea
+
 
     def _select_dte_for_task(
         self,
