@@ -1,8 +1,10 @@
 # stratdeck/tools/pricing.py
-from typing import Dict, Any
+from typing import Any, Dict
+
 from stratdeck.data.factory import get_provider
 
 _provider = None
+
 
 def _p():
     global _provider
@@ -10,9 +12,28 @@ def _p():
         _provider = get_provider()
     return _provider
 
+
 def last_price(symbol: str) -> float:
-    q: Dict[str, Any] = _p().get_quote(symbol)
-    return float(q["last"])
+    """
+    Return a best-effort underlying price using mid/mark before falling back to last.
+    """
+    q: Dict[str, Any] = _p().get_quote(symbol) or {}
+    for key in ("mark", "mid", "last"):
+        val = q.get(key)
+        try:
+            if val is not None:
+                return float(val)
+        except Exception:
+            continue
+    # Last resort: average bid/ask if provided
+    bid = q.get("bid")
+    ask = q.get("ask")
+    try:
+        if bid is not None and ask is not None:
+            return (float(bid) + float(ask)) / 2.0
+    except Exception:
+        pass
+    return float(q.get("last") or 0.0)
 
 
 def credit_for_vertical(vert: Dict) -> float:

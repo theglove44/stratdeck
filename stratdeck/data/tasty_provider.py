@@ -54,49 +54,72 @@ class TastyProvider(IDataProvider):
     def get_quote(self, symbol: str) -> Dict[str, Any]:
         sym = symbol.upper()
         instrument = "Index" if sym in self.INDEX_SYMBOLS else "Equity"
-        data = self._get_json(f"/market-data/{instrument}/{sym}")
-        last = data.get("last") or data.get("mark") or data.get("mid") or data.get("close") or 0.0
-        return {"symbol": sym, "last": float(last)}
+        payload = self._get_json(f"/market-data/{instrument}/{sym}")
+        data = payload.get("data") or payload or {}
+
+        def _f(val: Any) -> Optional[float]:
+            try:
+                return float(val)
+            except Exception:
+                return None
+
+        bid = _f(data.get("bid") or data.get("best-bid") or data.get("bid-price"))
+        ask = _f(data.get("ask") or data.get("best-ask") or data.get("ask-price"))
+        last = _f(data.get("last") or data.get("last-price") or data.get("close"))
+        mark = _f(data.get("mark") or data.get("mark-price"))
+        mid = self._mid(bid, ask, mark, last)
+        return {
+            "symbol": sym,
+            "bid": bid,
+            "ask": ask,
+            "last": last if last is not None else (mid if mid is not None else 0.0),
+            "mark": mid,
+            "mid": mid,
+        }
 
     def get_option_chain(self, symbol: str, expiry: Optional[str] = None) -> Dict[str, Any]:
         chain = self._get_json(f"/option-chains/{symbol}/nested")
         items = chain.get("data", {}).get("items", [])
         if not items:
-            return {"symbol": symbol, "expiry": expiry, "puts": []}
+            return {"symbol": symbol, "expiry": expiry, "puts": [], "calls": []}
         expirations = items[0].get("expirations", [])
         if not expirations:
-            return {"symbol": symbol, "expiry": expiry, "puts": []}
+            return {"symbol": symbol, "expiry": expiry, "puts": [], "calls": []}
         target = self._select_expiration(expirations, expiry)
-        strikes = target.get("strikes", [])
-        subset = self._limit_strikes(symbol, strikes)
-        quotes = self._fetch_option_quotes([s["put"].strip() for s in subset if s.get("put")])
+        strikes = self._limit_strikes(symbol, target.get("strikes", []))
+        if not strikes:
+            return {"symbol": symbol, "expiry": target.get("expiration-date"), "puts": [], "calls": []}
+
+        occs = []
+        for strike in strikes:
+            for key in ("put", "call"):
+                occ = strike.get(key)
+                if occ:
+                    occs.append(occ.strip())
+        occs = [o for o in occs if o][: self.MAX_OPTION_QUOTES]
+
+        quotes = self._fetch_option_quotes(occs)
         puts: List[Dict[str, Any]] = []
-        for strike in subset:
-            occ = strike.get("put", "").strip()
-            quote = quotes.get(occ)
-            if not quote:
-                continue
-            bid = float(quote.get("bid") or 0.0)
-            ask = float(quote.get("ask") or 0.0)
-            mid = quote.get("mid")
-            if mid is None:
-                mid = (bid + ask) / 2 if bid and ask else bid or ask or 0.0
-            delta = quote.get("delta") or quote.get("theoretical-delta") or 0.0
-            puts.append(
-                {
-                    "symbol": occ,
-                    "strike": float(strike.get("strike-price", 0.0) or 0.0),
-                    "delta": abs(float(delta)),
-                    "bid": bid,
-                    "ask": ask,
-                    "mid": float(mid),
-                    "streamer": strike.get("put-streamer-symbol"),
-                }
-            )
+        calls: List[Dict[str, Any]] = []
+
+        for strike in strikes:
+            for opt_type in ("put", "call"):
+                occ_symbol = (strike.get(opt_type) or "").strip()
+                if not occ_symbol:
+                    continue
+                parsed = self._option_row(strike, opt_type, occ_symbol, quotes)
+                if not parsed:
+                    continue
+                if opt_type == "put":
+                    puts.append(parsed)
+                else:
+                    calls.append(parsed)
+
         return {
             "symbol": symbol,
             "expiry": target.get("expiration-date"),
             "puts": puts,
+            "calls": calls,
         }
 
     def get_account_summary(self) -> Dict[str, Any]:
@@ -259,6 +282,8 @@ class TastyProvider(IDataProvider):
         return quotes
 
     def _fetch_quote_chunk(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        if not symbols:
+            return {}
         params = [("equity-option", sym) for sym in symbols]
         params.append(("with-greeks", "true"))
         data = self._get_json("/market-data/by-type", params=params)
@@ -271,16 +296,23 @@ class TastyProvider(IDataProvider):
         for leg in order.get("legs", []):
             if leg.get("kind") != "option":
                 continue
-            occ = self._make_occ_symbol(order.get("symbol", ""), leg.get("expiry", ""), leg.get("type", ""), float(leg.get("strike", 0)))
+            occ = self._make_occ_symbol(
+                order.get("symbol", ""),
+                leg.get("expiry", ""),
+                leg.get("type", ""),
+                float(leg.get("strike", 0)),
+            )
             side = leg.get("side", "buy").lower()
             action = "Sell to Open" if side == "sell" else "Buy to Open"
             total += (1 if action.startswith("Sell") else -1) * float(order.get("price") or 0.0)
-            legs.append({
-                "instrument-type": "Equity Option",
-                "symbol": occ,
-                "quantity": abs(int(leg.get("qty", 1))),
-                "action": action,
-            })
+            legs.append(
+                {
+                    "instrument-type": "Equity Option",
+                    "symbol": occ,
+                    "quantity": abs(int(leg.get("qty", 1))),
+                    "action": action,
+                }
+            )
         payload = {
             "source": "STRATDECK",
             "order-type": "Limit",
@@ -301,3 +333,77 @@ class TastyProvider(IDataProvider):
         strike_str = f"{strike_int:08d}"
         opt = opt_type.upper()[0]
         return f"{sym}{exp}{opt}{strike_str}"
+
+    # ----------------------------- parsing helpers -------------------------
+
+    @staticmethod
+    def _mid(bid: Optional[float], ask: Optional[float], mark: Optional[float], fallback: Optional[float] = None) -> Optional[float]:
+        vals = [v for v in (mark, fallback) if v is not None]
+        if bid is not None and ask is not None and bid > 0 and ask > 0:
+            vals.insert(0, (bid + ask) / 2.0)
+        return vals[0] if vals else None
+
+    @staticmethod
+    def _safe_float(val: Any) -> Optional[float]:
+        try:
+            return float(val)
+        except Exception:
+            return None
+
+    def _option_row(
+        self,
+        strike_row: Dict[str, Any],
+        opt_type: str,
+        occ_symbol: str,
+        quotes: Dict[str, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        quote = quotes.get(occ_symbol)
+        if not quote:
+            return None
+
+        bid = self._safe_float(quote.get("bid"))
+        ask = self._safe_float(quote.get("ask"))
+        mark = self._safe_float(quote.get("mark") or quote.get("mid"))
+        last = self._safe_float(quote.get("last"))
+        mid = self._mid(bid, ask, mark, last) or 0.0
+        greeks = self._extract_greeks(quote)
+        delta = greeks.get("delta") or self._safe_float(quote.get("delta")) or self._safe_float(
+            quote.get("theoretical-delta")
+        )
+        strike_price = self._safe_float(strike_row.get("strike-price")) or 0.0
+
+        row = {
+            "symbol": occ_symbol,
+            "type": opt_type,
+            "strike": strike_price,
+            "bid": bid if bid is not None else 0.0,
+            "ask": ask if ask is not None else 0.0,
+            "last": last if last is not None else mid,
+            "mid": float(mid),
+            "delta": abs(float(delta)) if delta is not None else 0.0,
+            "streamer": strike_row.get(f"{opt_type}-streamer-symbol"),
+        }
+
+        if greeks:
+            row["greeks"] = greeks
+            for k, v in greeks.items():
+                row[k] = v
+
+        return row
+
+    def _extract_greeks(self, quote: Dict[str, Any]) -> Dict[str, float]:
+        greeks: Dict[str, float] = {}
+        quote_greeks = quote.get("greeks") or {}
+        for key in ("delta", "theta", "gamma", "vega"):
+            raw = (
+                quote.get(key)
+                or quote_greeks.get(key)
+                or quote.get(f"theoretical-{key}")
+                or quote_greeks.get(f"theoretical-{key}")
+            )
+            try:
+                if raw is not None:
+                    greeks[key] = float(raw)
+            except Exception:
+                continue
+        return greeks
