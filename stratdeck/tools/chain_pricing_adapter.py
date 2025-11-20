@@ -269,4 +269,20 @@ class ChainPricingAdapter:
             "credit": round(credit, 2),
             "credit_per_width": cpw,
             "pop": pop,
+            "width": float(width),
+            "legs": {
+                "short": {
+                    "mid": float(short_mid),
+                    "strike": float(short_strike),
+                    "type": option_type,
+                    "side": "short",
+                },
+                "long": {
+                    "mid": float(long_mid),
+                    "strike": float(long_strike),
+                    "type": option_type,
+                    "side": "long",
+                },
+            },
+            "expiry": expiry,
         }
