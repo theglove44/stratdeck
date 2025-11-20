@@ -37,6 +37,46 @@ def get_underlying_price(
     if not symbol:
         return None
 
+    def _extract_price(quote: Any) -> Tuple[Optional[float], Optional[str]]:
+        if not isinstance(quote, dict):
+            return None, None
+
+        for key in ("mid", "mark", "last"):
+            val = quote.get(key)
+            if val is None:
+                continue
+            try:
+                return float(val), key
+            except Exception:
+                continue
+        return None, None
+
+    def _spx_fallback_via_xsp(fetcher: Callable[[str], Dict[str, Any]]) -> Optional[float]:
+        try:
+            quote = fetcher("XSP")
+        except Exception as exc:
+            log.warning(
+                "underlying_price_hint spx fallback via xsp failed error=%r", exc
+            )
+            return None
+
+        fallback_price, fallback_source = _extract_price(quote)
+        if fallback_price is None:
+            log.warning(
+                "underlying_price_hint spx fallback via xsp missing price quote=%r",
+                quote,
+            )
+            return None
+
+        synthetic_spx = fallback_price * 10.0
+        log.info(
+            "underlying_price_hint spx fallback via xsp source=%s xsp_price=%.4f synthetic_price=%.4f",
+            fallback_source,
+            fallback_price,
+            synthetic_spx,
+        )
+        return synthetic_spx
+
     fetcher = quote_fetcher
     if fetcher is None:
         try:
@@ -61,21 +101,28 @@ def get_underlying_price(
     try:
         quote = fetcher(symbol)
     except Exception as exc:  # pragma: no cover - defensive guard
-        if DEBUG_FILTERS:
-            log.debug("get_underlying_price: quote fetch failed for %s: %r", symbol, exc)
+        log.warning(
+            "underlying_price_hint live quote failed symbol=%s error=%r", symbol, exc
+        )
+        if symbol.upper() == "SPX":
+            return _spx_fallback_via_xsp(fetcher)
         return None
 
-    if not isinstance(quote, dict):
-        return None
+    price, source = _extract_price(quote)
+    if price is not None:
+        log.info(
+            "underlying_price_hint live quote used symbol=%s source=%s price=%.4f",
+            symbol,
+            source,
+            price,
+        )
+        return price
 
-    for key in ("mid", "mark", "last"):
-        val = quote.get(key)
-        if val is None:
-            continue
-        try:
-            return float(val)
-        except Exception:
-            continue
+    log.warning(
+        "underlying_price_hint live quote missing price symbol=%s quote=%r; falling back",
+        symbol,
+        quote,
+    )
 
     return None
 
