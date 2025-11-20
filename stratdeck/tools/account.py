@@ -6,7 +6,18 @@ from typing import Dict
 from stratdeck.data.factory import get_provider
 
 
+def trading_mode() -> str:
+    """
+    Separate trading intent (paper vs live) from data sourcing.
+    Defaults to paper for safety; live requires both STRATDECK_TRADING_MODE=live
+    and STRATDECK_DATA_MODE=live.
+    """
+    return os.getenv("STRATDECK_TRADING_MODE", "paper").lower()
+
+
 def is_live_mode() -> bool:
+    if trading_mode() != "live":
+        return False
     return os.getenv("STRATDECK_DATA_MODE", "mock").lower() == "live"
 
 

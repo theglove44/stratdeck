@@ -1,9 +1,18 @@
 # tools/orders.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import os
 import uuid
+import json
+
+from stratdeck.tools.chain_pricing_adapter import ChainPricingAdapter
+from stratdeck.tools.positions import add_position
+
+if TYPE_CHECKING:
+    from stratdeck.agents.trade_planner import TradeIdea, TradeLeg
 
 # Integration: provider for live mode
 try:
@@ -49,6 +58,167 @@ class SpreadPlan:
     fee_per_contract: float = 1.0
     width: Optional[float] = None         # for verticals only
     credit: Optional[float] = None        # per share credit
+
+# ========= Trading mode helpers =========
+
+def trading_mode() -> str:
+    """
+    Trading intent flag separate from data sourcing.
+    Defaults to paper for safety; live wiring remains opt-in.
+    """
+    return os.getenv("STRATDECK_TRADING_MODE", "paper").lower()
+
+
+def _calc_dte(expiry: Optional[str]) -> Optional[int]:
+    if not expiry:
+        return None
+    try:
+        d = datetime.fromisoformat(str(expiry)).date()
+    except Exception:
+        return None
+    today = datetime.now(timezone.utc).date()
+    return max((d - today).days, 0)
+
+
+def _leg_to_dict(leg: Any) -> Dict[str, Any]:
+    if hasattr(leg, "to_dict"):
+        data = leg.to_dict()
+    elif isinstance(leg, dict):
+        data = dict(leg)
+    else:
+        data = getattr(leg, "__dict__", {}) or {}
+
+    side = str(data.get("side") or data.get("position") or "").lower()
+    leg_type = str(
+        data.get("type")
+        or data.get("option_type")
+        or data.get("kind")
+        or data.get("optionType")
+        or ""
+    ).lower()
+    if leg_type in {"c", "call"}:
+        leg_type = "call"
+    elif leg_type in {"p", "put"}:
+        leg_type = "put"
+
+    qty = data.get("quantity", data.get("qty", 1))
+    try:
+        qty = int(qty)
+    except Exception:
+        qty = 1
+
+    expiry = data.get("expiry") or data.get("exp") or data.get("expiration")
+    strike = data.get("strike")
+    try:
+        strike = float(strike)
+    except Exception:
+        strike = strike
+
+    mid = data.get("mid") or data.get("price")
+    try:
+        mid = float(mid) if mid is not None else None
+    except Exception:
+        mid = None
+
+    return {
+        "side": side,
+        "type": leg_type,
+        "strike": strike,
+        "expiry": expiry,
+        "quantity": qty,
+        "mid": mid,
+    }
+
+
+def _provenance_snapshot(idea_like: Any) -> Optional[str]:
+    data = {}
+    if hasattr(idea_like, "to_dict"):
+        try:
+            data = idea_like.to_dict()
+        except Exception:
+            data = {}
+    elif isinstance(idea_like, dict):
+        data = idea_like
+    else:
+        data = getattr(idea_like, "__dict__", {}) or {}
+
+    provenance = data.get("provenance")
+    assignment = data.get("strategy_assignment")
+    if provenance is None and isinstance(assignment, dict):
+        try:
+            provenance = json.dumps(assignment, sort_keys=True)
+        except Exception:
+            provenance = str(assignment)
+
+    notes = data.get("notes") or getattr(idea_like, "notes", None) or []
+    prov_notes = [
+        n for n in notes if isinstance(n, str) and n.lower().startswith("[provenance]")
+    ]
+    if prov_notes:
+        joined = "; ".join(prov_notes)
+        provenance = f"{provenance}; {joined}" if provenance else joined
+    return provenance
+
+
+def _net_mid(legs: List[Dict[str, Any]]) -> Optional[float]:
+    have_mid = False
+    net = 0.0
+    for leg in legs:
+        mid = leg.get("mid")
+        if mid is None:
+            continue
+        have_mid = True
+        try:
+            mid_val = float(mid)
+        except Exception:
+            continue
+        qty = leg.get("quantity", leg.get("qty", 1)) or 1
+        try:
+            qty_val = abs(int(qty))
+        except Exception:
+            qty_val = 1
+        side = str(leg.get("side") or "").lower()
+        sign = -1
+        if side in {"short", "sell", "sell_to_open", "sell-to-open"}:
+            sign = 1
+        net += sign * mid_val * qty_val
+    if not have_mid:
+        return None
+    return round(net, 4)
+
+
+def _legs_from_pricing(pricing: Dict[str, Any], fallback_legs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not pricing:
+        return []
+    legs_block = pricing.get("legs") or {}
+    legs: List[Dict[str, Any]] = []
+    for label in ("short", "long"):
+        row = legs_block.get(label)
+        if isinstance(row, dict):
+            entry = dict(row)
+            entry.setdefault("side", label)
+            legs.append(entry)
+    if legs:
+        return legs
+    return fallback_legs
+
+
+def _pricing_legs(legs: List[Any]) -> List[Any]:
+    parsed: List[Any] = []
+    for leg in legs:
+        if hasattr(leg, "type") and hasattr(leg, "side"):
+            parsed.append(leg)
+            continue
+        data = _leg_to_dict(leg)
+        parsed.append(
+            SimpleNamespace(
+                type=data.get("type"),
+                side=data.get("side"),
+                strike=data.get("strike"),
+                expiry=data.get("expiry"),
+            )
+        )
+    return parsed
 
 # ========= Converters =========
 
@@ -192,6 +362,129 @@ def preview(plan: OrderPlan, fee_per_contract_leg: float = FEE_PER_CONTRACT_LEG_
         bp_required=round(bp_required, 2),
     )
 
+def enter_paper_trade(
+    trade_idea: "TradeIdea",
+    qty: int = 1,
+    *,
+    account_id: Optional[str] = None,
+    data_mode: Optional[str] = None,
+    pricing_client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Paper-only entry point for TradeIdeas.
+
+    - Prices legs at mid using the chain pricing adapter.
+    - Computes net credit/debit and credit_per_width.
+    - Writes the fill to the positions store (paper ledger).
+    """
+    mode = trading_mode()
+    if mode != "paper":
+        raise ValueError("Live trading not implemented here. Set STRATDECK_TRADING_MODE=paper.")
+
+    idea_dict = trade_idea.to_dict() if hasattr(trade_idea, "to_dict") else getattr(trade_idea, "__dict__", {}) or {}
+
+    symbol = idea_dict.get("trade_symbol") or idea_dict.get("symbol")
+    if not symbol:
+        raise ValueError("Trade idea missing symbol/trade_symbol")
+    symbol = str(symbol).upper()
+
+    underlying = idea_dict.get("underlying") or symbol
+    strategy = idea_dict.get("strategy") or idea_dict.get("strategy_type") or "unknown"
+    direction = idea_dict.get("direction")
+    spread_width = idea_dict.get("spread_width")
+
+    raw_legs = getattr(trade_idea, "legs", None) or idea_dict.get("legs", []) or []
+    legs = [_leg_to_dict(l) for l in raw_legs]
+    expiry = None
+    for leg in legs:
+        if leg.get("expiry"):
+            expiry = str(leg["expiry"])
+            break
+    dte = _calc_dte(expiry)
+    target_dte = idea_dict.get("dte_target") or dte
+
+    active_data_mode = (data_mode or os.getenv("STRATDECK_DATA_MODE", "mock")).lower()
+    pricing_adapter = pricing_client or ChainPricingAdapter()
+    pricing: Optional[Dict[str, Any]] = None
+    if pricing_adapter and hasattr(pricing_adapter, "price_structure"):
+        try:
+            pricing = pricing_adapter.price_structure(
+                symbol=symbol,
+                strategy_type=strategy,
+                legs=_pricing_legs(raw_legs),
+                dte_target=int(target_dte or 0),
+                target_delta_hint=idea_dict.get("target_delta"),
+            )
+        except Exception as exc:
+            print(f"[orders] warn: price_structure failed for {symbol}: {exc}")
+            pricing = None
+
+    leg_quotes = _legs_from_pricing(pricing or {}, legs)
+    if pricing and pricing.get("width") and spread_width is None:
+        spread_width = pricing.get("width")
+
+    net_mid = _net_mid(leg_quotes)
+    credit_per_width = pricing.get("credit_per_width") if pricing else None
+    if net_mid is None and pricing and pricing.get("credit") is not None:
+        try:
+            net_mid = float(pricing["credit"])
+        except Exception:
+            net_mid = None
+
+    if net_mid is None:
+        try:
+            net_mid = float(idea_dict.get("estimated_credit"))
+        except Exception:
+            net_mid = 0.0
+
+    net_mid = float(net_mid or 0.0)
+    if credit_per_width is None and spread_width:
+        try:
+            credit_per_width = round(net_mid / float(spread_width), 4)
+        except Exception:
+            credit_per_width = None
+
+    total_credit = round(net_mid * qty * 100.0, 2)
+    provenance = _provenance_snapshot(idea_dict)
+
+    pos = add_position(
+        {
+            "symbol": symbol,
+            "underlying": underlying,
+            "strategy": strategy,
+            "direction": direction,
+            "expiry": expiry or "",
+            "width": spread_width or 0.0,
+            "credit": net_mid,
+            "dte": dte,
+            "provenance": provenance,
+            "notes": idea_dict.get("notes"),
+            "target_delta": idea_dict.get("target_delta"),
+            "account_id": account_id,
+        },
+        qty=qty,
+        entry_mid_price=net_mid,
+    )
+
+    position_id = pos.get("id")
+    return {
+        "position_id": position_id,
+        "symbol": symbol,
+        "underlying": underlying,
+        "strategy": strategy,
+        "direction": direction,
+        "qty": qty,
+        "expiry": expiry,
+        "dte": dte,
+        "entry_mid_price": round(net_mid, 4),
+        "total_credit": total_credit,
+        "credit_per_width": credit_per_width,
+        "legs": leg_quotes,
+        "provenance": provenance,
+        "trading_mode": mode,
+        "data_mode": active_data_mode,
+    }
+
 # ========= Placement =========
 
 def place(order_or_spread_plan: Union[Dict[str, Union[str, int, float, list, dict]], SpreadPlan],
@@ -225,4 +518,3 @@ def place_paper(order_dict: Dict[str, Union[str, int, float, list, dict]]) -> Di
         "symbol": order_dict.get("symbol"),
         "qty": sum(int(l.get("qty", 0)) for l in order_dict.get("legs", []) if isinstance(l, dict)) or 0,
     }
-
