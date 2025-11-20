@@ -171,14 +171,14 @@ class ChainPricingAdapter:
 
         def _nearest_quote(strike: float) -> Optional[Dict[str, Any]]:
             best: Optional[Dict[str, Any]] = None
-            best_diff: Optional[float] = None
+            best_diff: float = float("inf")
             for row in options:
                 try:
                     s = float(row.get("strike"))
                 except Exception:
                     continue
                 diff = abs(s - strike)
-                if best is None or diff < (best_diff or 1e9):
+                if diff < best_diff:
                     best = row
                     best_diff = diff
             return best

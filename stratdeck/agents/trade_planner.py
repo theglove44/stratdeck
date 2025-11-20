@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import logging
 import os
 import sys
@@ -14,6 +14,70 @@ from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 DEBUG_FILTERS = os.getenv("STRATDECK_DEBUG_STRATEGY_FILTERS") == "1"
+
+
+def get_underlying_price(
+    data_symbol: str,
+    trade_symbol: str,
+    data_mode: Optional[str] = None,
+    quote_fetcher: Optional[Callable[[str], Dict[str, Any]]] = None,
+) -> Optional[float]:
+    """
+    Resolve an underlying price hint depending on the configured data mode.
+
+    In live mode, pull a real-time quote (prefer mid/mark; fall back to last)
+    via the configured data provider (TastyProvider). In mock/default modes,
+    defer to TA-derived hints by returning None here.
+    """
+    mode = (data_mode or os.getenv("STRATDECK_DATA_MODE", "mock")).lower()
+    if mode != "live":
+        return None
+
+    symbol = (trade_symbol or data_symbol or "").strip()
+    if not symbol:
+        return None
+
+    fetcher = quote_fetcher
+    if fetcher is None:
+        try:
+            from stratdeck.data.factory import get_provider
+
+            provider = get_provider()
+            fetcher = getattr(provider, "get_quote", None)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            if DEBUG_FILTERS:
+                log.debug(
+                    "get_underlying_price: provider unavailable mode=%s error=%r",
+                    mode,
+                    exc,
+                )
+            return None
+
+    if fetcher is None:
+        if DEBUG_FILTERS:
+            log.debug("get_underlying_price: no quote fetcher available for %s", symbol)
+        return None
+
+    try:
+        quote = fetcher(symbol)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        if DEBUG_FILTERS:
+            log.debug("get_underlying_price: quote fetch failed for %s: %r", symbol, exc)
+        return None
+
+    if not isinstance(quote, dict):
+        return None
+
+    for key in ("mid", "mark", "last"):
+        val = quote.get(key)
+        if val is None:
+            continue
+        try:
+            return float(val)
+        except Exception:
+            continue
+
+    return None
 
 
 @dataclass
@@ -248,6 +312,16 @@ class TradePlanner:
             range_info=range_info,
         )
 
+        data_symbol, trade_symbol = resolve_symbols(symbol)
+        data_mode = os.getenv("STRATDECK_DATA_MODE", "mock")
+        live_hint = get_underlying_price(
+            data_symbol=data_symbol,
+            trade_symbol=trade_symbol,
+            data_mode=data_mode,
+        )
+        if live_hint is not None:
+            underlying_hint = live_hint
+
         target_dte = self._select_dte_for_task(
             symbol=symbol,
             strategy=task.strategy,
@@ -258,8 +332,6 @@ class TradePlanner:
             strategy=task.strategy,
             underlying_hint=underlying_hint,
         )
-
-        data_symbol, trade_symbol = resolve_symbols(symbol)
 
         legs, spread_width = self._build_legs_from_ta(
             strategy_type=strategy_type,
@@ -596,6 +668,14 @@ class TradePlanner:
         )
 
         data_symbol, trade_symbol = resolve_symbols(symbol)
+        data_mode = os.getenv("STRATDECK_DATA_MODE", "mock")
+        live_hint = get_underlying_price(
+            data_symbol=data_symbol,
+            trade_symbol=trade_symbol,
+            data_mode=data_mode,
+        )
+        if live_hint is not None:
+            underlying_hint = live_hint
 
         legs, spread_width = self._build_legs_from_ta(
             strategy_type=strategy_type,

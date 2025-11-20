@@ -19,3 +19,4 @@ packages/mcp-server/stratdeck.db*
 
 # OS files
 .DS_Store
+.serena/
