@@ -2,7 +2,7 @@ from typing import Dict, List
 
 import pytest
 
-from stratdeck.agents.trade_planner import TradePlanner
+from stratdeck.agents.trade_planner import TradePlanner, get_underlying_price
 
 
 def _scan_row(symbol: str, low: float, high: float) -> Dict:
@@ -79,3 +79,49 @@ def test_underlying_hint_live_falls_back_to_last(monkeypatch):
     idea = ideas[0]
     assert idea.underlying_price_hint == pytest.approx(640.0)
     assert calls == ["XSP"]
+
+
+def test_get_underlying_price_logs_live_quote(caplog):
+    caplog.set_level("INFO")
+    calls: List[str] = []
+
+    def fake_fetcher(symbol: str):
+        calls.append(symbol)
+        return {"mid": 123.45, "last": 122.0}
+
+    price = get_underlying_price(
+        data_symbol="SPY",
+        trade_symbol="SPY",
+        data_mode="live",
+        quote_fetcher=fake_fetcher,
+    )
+    assert price == pytest.approx(123.45)
+    assert calls == ["SPY"]
+    assert any(
+        "live quote used" in rec.message and "symbol=SPY" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_get_underlying_price_spx_fallback_to_xsp(caplog):
+    caplog.set_level("INFO")
+    calls: List[str] = []
+
+    def fake_fetcher(symbol: str):
+        calls.append(symbol)
+        if symbol == "SPX":
+            raise RuntimeError("rate limit")
+        return {"mid": 42.0}
+
+    price = get_underlying_price(
+        data_symbol="SPX",
+        trade_symbol="SPX",
+        data_mode="live",
+        quote_fetcher=fake_fetcher,
+    )
+
+    assert price == pytest.approx(420.0)
+    assert calls == ["SPX", "XSP"]
+    assert any(
+        "spx fallback via xsp" in rec.message for rec in caplog.records
+    )
