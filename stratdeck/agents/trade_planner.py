@@ -60,6 +60,7 @@ class TradeIdea:
     spread_width: Optional[float] = None
     target_delta: Optional[float] = None
     notes: List[str] = None
+    provenance: Optional[Dict[str, Any]] = None
     # NEW: chain-based metrics for TraderAgent / selection logic
     pop: Optional[float] = None
     credit_per_width: Optional[float] = None
@@ -69,6 +70,33 @@ class TradeIdea:
         d = asdict(self)
         d["legs"] = [leg.to_dict() for leg in self.legs]
         return d
+
+
+# Helper to best-effort dump Pydantic / dataclass models into plain dicts.
+def _dump_model(model: Any) -> Optional[Dict[str, Any]]:
+    if model is None:
+        return None
+
+    dumper = getattr(model, "model_dump", None)
+    if callable(dumper):
+        try:
+            return dumper(exclude_none=True)
+        except Exception:
+            return dumper()
+
+    dumper = getattr(model, "dict", None)
+    if callable(dumper):
+        try:
+            return dumper(exclude_none=True)
+        except Exception:
+            return dumper()
+
+    if hasattr(model, "__dict__"):
+        return {
+            k: v for k, v in vars(model).items() if not k.startswith("_") and v is not None
+        }
+
+    return None
 
 
 class TradePlanner:
@@ -206,6 +234,44 @@ class TradePlanner:
 
     # ---------- Internals ----------
 
+    def _build_provenance(
+        self,
+        task: SymbolStrategyTask,
+        dte_rule: Any,
+        selected_dte: Optional[int],
+        width_rule: Any,
+        width_selected: Optional[float],
+        spread_width: Optional[float],
+        filters: Any,
+        candidate_metrics: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        provenance: Dict[str, Any] = {
+            "strategy_template_name": getattr(task.strategy, "name", None)
+            or getattr(task.strategy, "id", None),
+            "strategy_template_label": getattr(task.strategy, "label", None),
+            "universe_name": getattr(task.universe, "name", None),
+            "dte_rule_used": {
+                "rule": _dump_model(dte_rule),
+                "selected": selected_dte,
+            },
+            "width_rule_used": {
+                "rule": _dump_model(width_rule),
+                "selected": width_selected,
+                "applied_spread_width": spread_width,
+            },
+            "filters_applied": None,
+        }
+
+        if filters is not None:
+            filters_dump = _dump_model(filters) or {}
+            if candidate_metrics:
+                filters_dump["candidate_values"] = {
+                    k: v for k, v in candidate_metrics.items() if v is not None
+                }
+            provenance["filters_applied"] = filters_dump
+
+        return provenance
+
     def _generate_for_task(
         self,
         symbol: str,
@@ -234,9 +300,13 @@ class TradePlanner:
         support_levels: List[float] = structure.get("support") or []
         resistance_levels: List[float] = structure.get("resistance") or []
         range_info: Optional[Dict[str, Any]] = structure.get("range") or None
+        strategy_template = task.strategy
+        dte_rule = getattr(strategy_template, "dte", None)
+        filters = getattr(strategy_template, "filters", None)
+        width_rule = getattr(strategy_template, "width_rule", None)
 
         strategy_type = self._strategy_type_from_template(
-            template=task.strategy,
+            template=strategy_template,
             dir_bias=dir_bias,
         )
         if strategy_type == "skip":
@@ -250,12 +320,12 @@ class TradePlanner:
 
         target_dte = self._select_dte_for_task(
             symbol=symbol,
-            strategy=task.strategy,
+            strategy=strategy_template,
             default_dte_target=default_dte_target,
         )
 
         width_override = self._select_width_for_task(
-            strategy=task.strategy,
+            strategy=strategy_template,
             underlying_hint=underlying_hint,
         )
 
@@ -290,8 +360,8 @@ class TradePlanner:
         notes = list(notes or [])
 
         # Pull stable identifiers from the StrategyTemplate / UniverseConfig
-        template_name = getattr(task.strategy, "name", None) or getattr(
-            task.strategy, "id", None
+        template_name = getattr(strategy_template, "name", None) or getattr(
+            strategy_template, "id", None
         )
         universe_name = getattr(task.universe, "name", None)
 
@@ -308,7 +378,7 @@ class TradePlanner:
             notes.append("[provenance] " + " ".join(provenance_parts))
         # ---------------------------------------------------------------------
 
-                # Canonical IVR source is row["ivr"], but we allow some fallbacks
+        # Canonical IVR source is row["ivr"], but we allow some fallbacks
         ivr = row.get("ivr")
         if ivr is None:
             # Optional fallbacks if your scan rows currently use other keys.
@@ -363,8 +433,23 @@ class TradePlanner:
         if DEBUG_FILTERS:
             print("[trade-ideas] candidate before filters:", candidate, file=sys.stderr)
 
-        if not self._passes_strategy_filters(candidate, task.strategy):
+        if not self._passes_strategy_filters(candidate, strategy_template):
             return None
+
+        provenance = self._build_provenance(
+            task=task,
+            dte_rule=dte_rule,
+            selected_dte=target_dte,
+            width_rule=width_rule,
+            width_selected=width_override,
+            spread_width=spread_width,
+            filters=filters,
+            candidate_metrics={
+                "pop": pop,
+                "ivr": ivr,
+                "credit_per_width": credit_per_width,
+            },
+        )
 
         idea = TradeIdea(
             symbol=symbol,
@@ -380,6 +465,7 @@ class TradePlanner:
             spread_width=spread_width,
             target_delta=0.20,
             notes=notes,
+            provenance=provenance,
             # NEW: expose chain-based metrics to TraderAgent
             pop=pop,
             credit_per_width=credit_per_width,
