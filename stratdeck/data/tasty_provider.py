@@ -1,6 +1,7 @@
 # stratdeck/data/tasty_provider.py
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import datetime
@@ -8,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from .live_quotes import LiveMarketDataService, QuoteSnapshot
 from .provider import IDataProvider
 
 try:  # suppress noisy TLS warning on macOS + Python 3.9
@@ -19,6 +21,8 @@ try:  # suppress noisy TLS warning on macOS + Python 3.9
 except Exception:
     pass
 
+log = logging.getLogger(__name__)
+
 
 class TastyProvider(IDataProvider):
     """Minimal REST client for the tastytrade API."""
@@ -27,7 +31,7 @@ class TastyProvider(IDataProvider):
     INDEX_SYMBOLS = {"SPX", "RUT", "NDX", "VIX", "XSP"}
     MAX_OPTION_QUOTES = 75  # API limit is 100 per request
 
-    def __init__(self):
+    def __init__(self, live_quotes: Optional[LiveMarketDataService] = None):
         self.username = os.getenv("TASTY_USER") or os.getenv("TT_USERNAME")
         self.password = os.getenv("TASTY_PASS") or os.getenv("TT_PASSWORD")
         if not self.username or not self.password:
@@ -48,13 +52,43 @@ class TastyProvider(IDataProvider):
         if not self.account_id:
             self.account_id = self._fetch_default_account()
         self._metrics_cache: Dict[str, Dict[str, Any]] = {}
+        self._live_quotes = live_quotes
 
     # ------------------------- public interface -------------------------
 
     def get_quote(self, symbol: str) -> Dict[str, Any]:
         sym = symbol.upper()
-        instrument = "Index" if sym in self.INDEX_SYMBOLS else "Equity"
-        payload = self._get_json(f"/market-data/{instrument}/{sym}")
+        live_quote = self._quote_from_snapshot(sym)
+        if live_quote is not None:
+            return live_quote
+        return self._get_quote_rest(sym)
+
+    def _quote_from_snapshot(self, symbol: str) -> Optional[Dict[str, Any]]:
+        if not self._live_quotes:
+            return None
+        snapshot: Optional[QuoteSnapshot] = self._live_quotes.get_snapshot(symbol)
+        if snapshot is None:
+            return None
+
+        bid = self._safe_float(snapshot.bid)
+        ask = self._safe_float(snapshot.ask)
+        mid = self._safe_float(snapshot.mid) or self._mid(bid, ask, None, None)
+
+        log.debug("Using live quote from DXLink symbol=%s mid=%s", symbol, mid)
+
+        return {
+            "symbol": symbol,
+            "bid": bid,
+            "ask": ask,
+            "last": mid if mid is not None else 0.0,
+            "mark": mid,
+            "mid": mid,
+            "source": "dxlink",
+        }
+
+    def _get_quote_rest(self, symbol: str) -> Dict[str, Any]:
+        instrument = "Index" if symbol in self.INDEX_SYMBOLS else "Equity"
+        payload = self._get_json(f"/market-data/{instrument}/{symbol}")
         data = payload.get("data") or payload or {}
 
         def _f(val: Any) -> Optional[float]:
@@ -69,7 +103,7 @@ class TastyProvider(IDataProvider):
         mark = _f(data.get("mark") or data.get("mark-price"))
         mid = self._mid(bid, ask, mark, last)
         return {
-            "symbol": sym,
+            "symbol": symbol,
             "bid": bid,
             "ask": ask,
             "last": last if last is not None else (mid if mid is not None else 0.0),

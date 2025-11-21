@@ -14,7 +14,7 @@ node_modules/
 stratdeck.db
 stratdeck/data/journal.csv
 stratdeck/data/positions.csv
-data/
+/data/
 packages/mcp-server/stratdeck.db*
 
 # OS files
