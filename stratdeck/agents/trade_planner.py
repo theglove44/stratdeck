@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 from ..tools.ta import resolve_symbols
 from ..strategy_engine import SymbolStrategyTask, choose_width, choose_target_dte
 from ..tools.chain_pricing_adapter import ChainPricingAdapter
+from ..tools.retries import call_with_retries
 
 if TYPE_CHECKING:
     from stratdeck.data.provider import IDataProvider
@@ -44,7 +45,11 @@ def _spx_fallback_via_xsp(
     if fetcher is None:
         return None, None
     try:
-        quote = fetcher("XSP")
+        quote = call_with_retries(
+            lambda: fetcher("XSP"),
+            label="quote XSP fallback",
+            logger=log,
+        )
     except Exception as exc:
         log.warning(
             "underlying_price_hint spx fallback via xsp failed error=%r", exc
@@ -75,22 +80,32 @@ def resolve_underlying_price_hint(
     provider: Optional["IDataProvider"],
     ta_price_hint: Optional[float] = None,
     chartist: Optional[Any] = None,
-) -> float:
+) -> Optional[float]:
     """
     Resolve the underlying price hint for a trade idea using this precedence:
 
-      1. Live quote via provider.get_quote(symbol) (DXLink snapshot first, REST fallback).
-      2. TA/Chartist hint (provided via ta_price_hint or optional chartist helper).
-      3. Safe fallback with warning when both are unavailable.
+      1. Live quote via provider.get_quote(symbol) with bounded retries.
+      2. Cached quote (if provider exposes get_cached_quote / get_quote_cached).
+      3. TA/Chartist hint (provided via ta_price_hint or optional chartist helper).
+      4. Final fallback returns None with a warning when no sources resolve.
     """
     sym = (symbol or data_symbol or "").strip().upper()
     data_sym = (data_symbol or "").strip()
     fetcher = getattr(provider, "get_quote", None) if provider is not None else None
+    cached_fetcher = None
+    if provider is not None:
+        cached_fetcher = getattr(provider, "get_cached_quote", None) or getattr(
+            provider, "get_quote_cached", None
+        )
 
     # --- 1) Live quote path -------------------------------------------------
     if fetcher is not None and sym:
         try:
-            quote = fetcher(sym)
+            quote = call_with_retries(
+                lambda: fetcher(sym),
+                label=f"quote {sym}",
+                logger=log,
+            )
         except Exception as exc:
             log.warning(
                 "underlying_price_hint live quote failed symbol=%s error=%r", sym, exc
@@ -116,6 +131,30 @@ def resolve_underlying_price_hint(
                 sym,
                 quote,
             )
+
+    # --- 1b) Cached quote fallback -----------------------------------------
+    if cached_fetcher is not None and sym:
+        try:
+            cached_quote = cached_fetcher(sym)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(
+                "underlying_price_hint cached quote failed symbol=%s error=%r",
+                sym,
+                exc,
+            )
+            cached_quote = None
+
+        cached_price, source = (
+            _extract_price_from_quote(cached_quote) if cached_quote else (None, None)
+        )
+        if cached_price is not None:
+            log.info(
+                "underlying_price_hint cached quote used symbol=%s source=%s price=%.4f",
+                sym,
+                source,
+                cached_price,
+            )
+            return float(cached_price)
 
     # --- 2) TA / Chartist hint ---------------------------------------------
     ta_hint = ta_price_hint
@@ -152,7 +191,14 @@ def resolve_underlying_price_hint(
         data_sym,
         provider is not None,
     )
-    return 0.0
+    return None
+
+
+@dataclass
+class FilterDecision:
+    passed: bool
+    applied: Dict[str, float]
+    reasons: List[str]
 
 
 @dataclass
@@ -203,6 +249,12 @@ class TradeIdea:
     pop: Optional[float] = None
     credit_per_width: Optional[float] = None
     estimated_credit: Optional[float] = None  # total net credit for the structure
+    # Provenance + filter metadata
+    strategy_id: Optional[str] = None
+    universe_id: Optional[str] = None
+    filters_passed: Optional[bool] = None
+    filters_applied: Optional[Dict[str, float]] = None
+    filter_reasons: Optional[List[str]] = None  # reasons present even when passed
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -525,7 +577,19 @@ class TradePlanner:
         if DEBUG_FILTERS:
             print("[trade-ideas] candidate before filters:", candidate, file=sys.stderr)
 
-        if not self._passes_strategy_filters(candidate, task.strategy):
+        decision = self._evaluate_strategy_filters(candidate, task.strategy)
+        if DEBUG_FILTERS:
+            status = "PASSED" if decision.passed else "FAILED"
+            detail = "; ".join(decision.reasons) if decision.reasons else "ok"
+            log.debug(
+                "[filters] %s %s %s %s",
+                symbol,
+                strategy_type,
+                status,
+                detail,
+            )
+
+        if not decision.passed:
             return None
 
         idea = TradeIdea(
@@ -546,6 +610,11 @@ class TradePlanner:
             pop=pop,
             credit_per_width=credit_per_width,
             estimated_credit=estimated_credit,
+            strategy_id=template_name,
+            universe_id=universe_name,
+            filters_passed=decision.passed,
+            filters_applied=decision.applied or {},
+            filter_reasons=decision.reasons or [],
         )
         return idea
 
@@ -608,9 +677,17 @@ class TradePlanner:
         candidate: Dict[str, Any],
         strategy: Any,
     ) -> bool:
+        decision = self._evaluate_strategy_filters(candidate, strategy)
+        return decision.passed
+
+    def _evaluate_strategy_filters(
+        self,
+        candidate: Dict[str, Any],
+        strategy: Any,
+    ) -> FilterDecision:
         filters = getattr(strategy, "filters", None)
         if filters is None:
-            return True
+            return FilterDecision(True, {}, [])
 
         min_pop = getattr(filters, "min_pop", None)
         min_ivr = getattr(filters, "min_ivr", None)
@@ -622,51 +699,49 @@ class TradePlanner:
 
         symbol = candidate.get("symbol")
         strategy_name = getattr(strategy, "name", None) or getattr(strategy, "id", None)
+        applied: Dict[str, float] = {}
+        reasons: List[str] = []
 
         # --- POP filter ----------------------------------------------------------
-        if min_pop is not None and pop is not None and pop < min_pop:
-            if DEBUG_FILTERS:
-                log.debug(
-                    "Filter reject: symbol=%s strategy=%s reason=pop min_pop=%.2f pop=%.2f",
-                    symbol,
-                    strategy_name,
-                    float(min_pop),
-                    float(pop),
-                )
-            return False
+        if min_pop is not None:
+            applied["min_pop"] = float(min_pop)
+            if pop is not None and pop < min_pop:
+                reasons.append(f"min_pop {float(pop):.2f} < {float(min_pop):.2f}")
 
         # --- IVR filter ----------------------------------------------------------
         # NOTE: data-missing tolerant – if ivr is None, we do NOT block the idea,
         # we simply skip the check.
-        if min_ivr is not None and ivr is not None and ivr < min_ivr:
-            if DEBUG_FILTERS:
-                log.debug(
-                    "Filter reject: symbol=%s strategy=%s reason=ivr min_ivr=%.2f ivr=%.2f",
-                    symbol,
-                    strategy_name,
-                    float(min_ivr),
-                    float(ivr),
-                )
-            return False
+        if min_ivr is not None:
+            applied["min_ivr"] = float(min_ivr)
+            if ivr is not None and ivr < min_ivr:
+                reasons.append(f"min_ivr {float(ivr):.2f} < {float(min_ivr):.2f}")
 
         # --- credit_per_width filter --------------------------------------------
-        if (
-            min_credit_per_width is not None
-            and credit_per_width is not None
-            and credit_per_width < min_credit_per_width
-        ):
-            if DEBUG_FILTERS:
-                log.debug(
-                    "Filter reject: symbol=%s strategy=%s reason=cpw "
-                    "min_cpw=%.4f cpw=%.4f",
-                    symbol,
-                    strategy_name,
-                    float(min_credit_per_width),
-                    float(credit_per_width),
+        if min_credit_per_width is not None:
+            applied["min_credit_per_width"] = float(min_credit_per_width)
+            if (
+                credit_per_width is not None
+                and credit_per_width < min_credit_per_width
+            ):
+                reasons.append(
+                    "min_credit_per_width "
+                    f"{float(credit_per_width):.4f} < {float(min_credit_per_width):.4f}"
                 )
-            return False
 
-        return True
+        passed = len(reasons) == 0
+
+        if DEBUG_FILTERS:
+            status = "PASSED" if passed else "FAILED"
+            detail = ", ".join(reasons) if reasons else "all checks satisfied"
+            log.debug(
+                "[filters] %s %s %s: %s",
+                symbol,
+                strategy_name or "",
+                status,
+                detail,
+            )
+
+        return FilterDecision(passed, applied, reasons)
 
     def _strategy_type_from_template(self, template: Any, dir_bias: str) -> str:
         """

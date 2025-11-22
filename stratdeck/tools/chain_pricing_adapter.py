@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Sequence, List
 
 from .chains import get_chain, _nearest_expiry
 from .pricing import vertical_credit, pop_estimate
+from .retries import call_with_retries
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +61,11 @@ class ChainPricingAdapter:
             return []
 
         try:
-            expiries = getter(symbol)
+            expiries = call_with_retries(
+                lambda: getter(symbol),
+                label=f"get_available_dtes {symbol}",
+                logger=log,
+            )
         except Exception as exc:
             log.warning("[chains_adapter] expiries fetch failed for %s: %s", symbol, exc)
             return []
