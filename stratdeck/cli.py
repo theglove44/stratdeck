@@ -32,7 +32,7 @@ from .tools.scan_cache import (
     store_trade_ideas,
 )
 from .tools.ta import load_last_scan
-from .tools.ideas import load_last_ideas
+from .tools.ideas import load_last_ideas, persist_last_ideas
 
 LAST_TRADE_IDEAS_PATH = Path(".stratdeck/last_trade_ideas.json")
 
@@ -777,13 +777,15 @@ def trade_ideas(
     if not ideas:
         return
 
+    payload = [idea.to_dict() for idea in ideas]
+
     store_trade_ideas(ideas)
+    persist_last_ideas(payload, path=LAST_TRADE_IDEAS_PATH)
 
     if output_path and not json_output:
         raise click.ClickException("--output-path requires --json-output.")
 
     if json_output:
-        payload = [idea.to_dict() for idea in ideas]
         blob = json.dumps(payload, indent=2, default=str)
         if output_path:
             path = Path(output_path)

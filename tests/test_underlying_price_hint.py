@@ -171,7 +171,10 @@ def test_resolve_underlying_price_hint_spx_fallback_to_xsp(caplog):
     )
 
     assert price == pytest.approx(420.0)
-    assert calls == ["SPX", "XSP"]
+    assert calls[0] == "SPX"
+    assert calls[-1] == "XSP"
+    assert calls.count("XSP") == 1
+    assert calls.count("SPX") >= 1
     assert any("spx fallback via xsp" in rec.message for rec in caplog.records)
 
 
@@ -189,5 +192,62 @@ def test_resolve_underlying_price_hint_warns_when_live_and_ta_missing(caplog):
         ta_price_hint=None,
     )
 
-    assert price == 0.0
+    assert price is None
     assert any("fallback missing live+ta" in rec.message for rec in caplog.records)
+
+
+def test_resolve_underlying_price_hint_retries_then_succeeds(monkeypatch):
+    monkeypatch.setenv("STRATDECK_DATA_MODE", "live")
+    monkeypatch.setattr("stratdeck.tools.retries.time.sleep", lambda *_: None)
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    class RateLimitedProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def get_quote(self, symbol: str):
+            self.calls += 1
+            if self.calls < 3:
+                raise RateLimitError("Too Many Requests")
+            return {"mid": 101.0}
+
+    provider = RateLimitedProvider()
+    price = resolve_underlying_price_hint(
+        symbol="IWM",
+        data_symbol="IWM",
+        provider=provider,
+        ta_price_hint=99.0,
+    )
+
+    assert price == pytest.approx(101.0)
+    assert provider.calls == 3
+
+
+def test_resolve_underlying_price_hint_exhausts_and_uses_ta(monkeypatch):
+    monkeypatch.setenv("STRATDECK_DATA_MODE", "live")
+    monkeypatch.setattr("stratdeck.tools.retries.time.sleep", lambda *_: None)
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    class AlwaysRateLimitedProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def get_quote(self, symbol: str):
+            self.calls += 1
+            raise RateLimitError("429")
+
+    provider = AlwaysRateLimitedProvider()
+    price = resolve_underlying_price_hint(
+        symbol="IWM",
+        data_symbol="IWM",
+        provider=provider,
+        ta_price_hint=77.0,
+    )
+
+    # Falls back to TA after retry exhaustion
+    assert price == pytest.approx(77.0)
+    assert provider.calls >= 1

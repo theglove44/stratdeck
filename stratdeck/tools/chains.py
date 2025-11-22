@@ -1,7 +1,11 @@
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from stratdeck.data.factory import get_provider
+from stratdeck.tools.retries import call_with_retries
+
+log = logging.getLogger(__name__)
 
 _provider = None
 
@@ -20,7 +24,25 @@ def set_provider(provider) -> None:
 
 
 def get_chain(symbol: str, expiry: Optional[str] = None) -> Dict[str, Any]:
-    return _p().get_option_chain(symbol, expiry=expiry)
+    provider = _p()
+
+    def _fetch():
+        return provider.get_option_chain(symbol, expiry=expiry)
+
+    try:
+        return call_with_retries(
+            _fetch,
+            label=f"get_option_chain {symbol}",
+            logger=log,
+        ) or {}
+    except Exception as exc:
+        log.warning(
+            "[chains] failed to fetch chain symbol=%s expiry=%s error=%r",
+            symbol,
+            expiry,
+            exc,
+        )
+        return {}
 
 def _nearest_expiry(days: int) -> str:
     return (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
