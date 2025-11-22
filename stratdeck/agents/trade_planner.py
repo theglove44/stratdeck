@@ -906,11 +906,15 @@ class TradePlanner:
 
         def nearest_below(levels: List[float], ref: float) -> Optional[float]:
             below = [lvl for lvl in levels if lvl < ref]
-            return below[-1] if below else (levels[-1] if levels else None)
+            if below:
+                return below[-1]
+            return None
 
         def nearest_above(levels: List[float], ref: float) -> Optional[float]:
             above = [lvl for lvl in levels if lvl > ref]
-            return above[0] if above else (levels[0] if levels else None)
+            if above:
+                return above[0]
+            return None
 
         expiry_str = f"{dte_target}DTE"  # placeholder label
 
