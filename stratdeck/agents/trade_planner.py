@@ -1,130 +1,158 @@
 # stratdeck/agents/trade_planner.py
 
 from __future__ import annotations
-from dataclasses import dataclass, asdict
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import logging
 import os
 import sys
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 from ..tools.ta import resolve_symbols
 from ..strategy_engine import SymbolStrategyTask, choose_width, choose_target_dte
 from ..tools.chain_pricing_adapter import ChainPricingAdapter
-from pydantic import BaseModel
 
+if TYPE_CHECKING:
+    from stratdeck.data.provider import IDataProvider
 
 log = logging.getLogger(__name__)
 DEBUG_FILTERS = os.getenv("STRATDECK_DEBUG_STRATEGY_FILTERS") == "1"
 
 
-def get_underlying_price(
-    data_symbol: str,
-    trade_symbol: str,
-    data_mode: Optional[str] = None,
-    quote_fetcher: Optional[Callable[[str], Dict[str, Any]]] = None,
-) -> Optional[float]:
+def _extract_price_from_quote(quote: Any) -> Tuple[Optional[float], Optional[str]]:
     """
-    Resolve an underlying price hint depending on the configured data mode.
-
-    In live mode, pull a real-time quote (prefer mid/mark; fall back to last)
-    via the configured data provider (TastyProvider). In mock/default modes,
-    defer to TA-derived hints by returning None here.
+    Pull the first non-None price from a quote dict in mid→mark→last order.
     """
-    mode = (data_mode or os.getenv("STRATDECK_DATA_MODE", "mock")).lower()
-    if mode != "live":
-        return None
-
-    symbol = (trade_symbol or data_symbol or "").strip()
-    if not symbol:
-        return None
-
-    def _extract_price(quote: Any) -> Tuple[Optional[float], Optional[str]]:
-        if not isinstance(quote, dict):
-            return None, None
-
-        for key in ("mid", "mark", "last"):
-            val = quote.get(key)
-            if val is None:
-                continue
-            try:
-                return float(val), key
-            except Exception:
-                continue
+    if not isinstance(quote, dict):
         return None, None
 
-    def _spx_fallback_via_xsp(fetcher: Callable[[str], Dict[str, Any]]) -> Optional[float]:
+    for key in ("mid", "mark", "last"):
+        val = quote.get(key)
+        if val is None:
+            continue
         try:
-            quote = fetcher("XSP")
+            return float(val), key
+        except Exception:
+            continue
+    return None, None
+
+
+def _spx_fallback_via_xsp(
+    fetcher: Optional[Any],
+) -> Tuple[Optional[float], Optional[str]]:
+    """
+    If SPX quotes fail, try XSP and rescale (approx 1/10th the size).
+    """
+    if fetcher is None:
+        return None, None
+    try:
+        quote = fetcher("XSP")
+    except Exception as exc:
+        log.warning(
+            "underlying_price_hint spx fallback via xsp failed error=%r", exc
+        )
+        return None, None
+
+    fallback_price, fallback_source = _extract_price_from_quote(quote)
+    if fallback_price is None:
+        log.warning(
+            "underlying_price_hint spx fallback via xsp missing price quote=%r",
+            quote,
+        )
+        return None, None
+
+    synthetic_spx = fallback_price * 10.0
+    log.info(
+        "underlying_price_hint spx fallback via xsp source=%s xsp_price=%.4f synthetic_price=%.4f",
+        fallback_source,
+        fallback_price,
+        synthetic_spx,
+    )
+    return synthetic_spx, fallback_source
+
+
+def resolve_underlying_price_hint(
+    symbol: str,
+    data_symbol: str,
+    provider: Optional["IDataProvider"],
+    ta_price_hint: Optional[float] = None,
+    chartist: Optional[Any] = None,
+) -> float:
+    """
+    Resolve the underlying price hint for a trade idea using this precedence:
+
+      1. Live quote via provider.get_quote(symbol) (DXLink snapshot first, REST fallback).
+      2. TA/Chartist hint (provided via ta_price_hint or optional chartist helper).
+      3. Safe fallback with warning when both are unavailable.
+    """
+    sym = (symbol or data_symbol or "").strip().upper()
+    data_sym = (data_symbol or "").strip()
+    fetcher = getattr(provider, "get_quote", None) if provider is not None else None
+
+    # --- 1) Live quote path -------------------------------------------------
+    if fetcher is not None and sym:
+        try:
+            quote = fetcher(sym)
         except Exception as exc:
             log.warning(
-                "underlying_price_hint spx fallback via xsp failed error=%r", exc
+                "underlying_price_hint live quote failed symbol=%s error=%r", sym, exc
             )
-            return None
+            quote = None
 
-        fallback_price, fallback_source = _extract_price(quote)
-        if fallback_price is None:
+        live_price, source = _extract_price_from_quote(quote) if quote else (None, None)
+        if live_price is None and sym == "SPX":
+            live_price, source = _spx_fallback_via_xsp(fetcher)
+
+        if live_price is not None:
+            log.info(
+                "underlying_price_hint live quote used symbol=%s source=%s price=%.4f",
+                sym,
+                source,
+                live_price,
+            )
+            return float(live_price)
+
+        if quote is not None:
             log.warning(
-                "underlying_price_hint spx fallback via xsp missing price quote=%r",
+                "underlying_price_hint live quote missing price symbol=%s quote=%r; falling back",
+                sym,
                 quote,
             )
-            return None
 
-        synthetic_spx = fallback_price * 10.0
-        log.info(
-            "underlying_price_hint spx fallback via xsp source=%s xsp_price=%.4f synthetic_price=%.4f",
-            fallback_source,
-            fallback_price,
-            synthetic_spx,
+    # --- 2) TA / Chartist hint ---------------------------------------------
+    ta_hint = ta_price_hint
+    if ta_hint is None and chartist is not None:
+        price_fn = getattr(chartist, "get_price_hint", None) or getattr(
+            chartist, "price_hint", None
         )
-        return synthetic_spx
-
-    fetcher = quote_fetcher
-    if fetcher is None:
-        try:
-            from stratdeck.data.factory import get_provider
-
-            provider = get_provider()
-            fetcher = getattr(provider, "get_quote", None)
-        except Exception as exc:  # pragma: no cover - defensive guard
-            if DEBUG_FILTERS:
-                log.debug(
-                    "get_underlying_price: provider unavailable mode=%s error=%r",
-                    mode,
+        if callable(price_fn):
+            try:
+                ta_hint = price_fn(data_sym or sym)
+            except Exception as exc:
+                log.warning(
+                    "underlying_price_hint chartist fallback failed symbol=%s data_symbol=%s error=%r",
+                    sym,
+                    data_sym,
                     exc,
                 )
-            return None
 
-    if fetcher is None:
-        if DEBUG_FILTERS:
-            log.debug("get_underlying_price: no quote fetcher available for %s", symbol)
-        return None
+    if ta_hint is not None:
+        try:
+            return float(ta_hint)
+        except Exception:
+            log.warning(
+                "underlying_price_hint ta fallback non-numeric symbol=%s data_symbol=%s value=%r",
+                sym,
+                data_sym,
+                ta_hint,
+            )
 
-    try:
-        quote = fetcher(symbol)
-    except Exception as exc:  # pragma: no cover - defensive guard
-        log.warning(
-            "underlying_price_hint live quote failed symbol=%s error=%r", symbol, exc
-        )
-        if symbol.upper() == "SPX":
-            return _spx_fallback_via_xsp(fetcher)
-        return None
-
-    price, source = _extract_price(quote)
-    if price is not None:
-        log.info(
-            "underlying_price_hint live quote used symbol=%s source=%s price=%.4f",
-            symbol,
-            source,
-            price,
-        )
-        return price
-
+    # --- 3) Final fallback --------------------------------------------------
     log.warning(
-        "underlying_price_hint live quote missing price symbol=%s quote=%r; falling back",
-        symbol,
-        quote,
+        "underlying_price_hint fallback missing live+ta symbol=%s data_symbol=%s provider_present=%s",
+        sym,
+        data_sym,
+        provider is not None,
     )
-
-    return None
+    return 0.0
 
 
 @dataclass
@@ -317,6 +345,24 @@ class TradePlanner:
 
     # ---------- Internals ----------
 
+    def _get_provider_if_live(self) -> Optional["IDataProvider"]:
+        mode = os.getenv("STRATDECK_DATA_MODE", "mock").lower()
+        if mode != "live":
+            return None
+
+        try:
+            from stratdeck.data.factory import get_provider
+
+            return get_provider()
+        except Exception as exc:  # pragma: no cover - defensive guard
+            if DEBUG_FILTERS:
+                log.debug(
+                    "resolve_underlying_price_hint: provider unavailable mode=%s error=%r",
+                    mode,
+                    exc,
+                )
+            return None
+
     def _generate_for_task(
         self,
         symbol: str,
@@ -353,21 +399,18 @@ class TradePlanner:
         if strategy_type == "skip":
             return None
 
-        underlying_hint = self._infer_underlying_price_hint(
-            support_levels=support_levels,
-            resistance_levels=resistance_levels,
-            range_info=range_info,
-        )
-
         data_symbol, trade_symbol = resolve_symbols(symbol)
-        data_mode = os.getenv("STRATDECK_DATA_MODE", "mock")
-        live_hint = get_underlying_price(
+
+        underlying_hint = resolve_underlying_price_hint(
+            symbol=trade_symbol,
             data_symbol=data_symbol,
-            trade_symbol=trade_symbol,
-            data_mode=data_mode,
+            provider=self._get_provider_if_live(),
+            ta_price_hint=self._infer_underlying_price_hint(
+                support_levels=support_levels,
+                resistance_levels=resistance_levels,
+                range_info=range_info,
+            ),
         )
-        if live_hint is not None:
-            underlying_hint = live_hint
 
         target_dte = self._select_dte_for_task(
             symbol=symbol,
@@ -708,21 +751,18 @@ class TradePlanner:
         if strategy_type == "skip":
             return []
 
-        underlying_hint = self._infer_underlying_price_hint(
-            support_levels,
-            resistance_levels,
-            range_info,
-        )
-
         data_symbol, trade_symbol = resolve_symbols(symbol)
-        data_mode = os.getenv("STRATDECK_DATA_MODE", "mock")
-        live_hint = get_underlying_price(
+
+        underlying_hint = resolve_underlying_price_hint(
+            symbol=trade_symbol,
             data_symbol=data_symbol,
-            trade_symbol=trade_symbol,
-            data_mode=data_mode,
+            provider=self._get_provider_if_live(),
+            ta_price_hint=self._infer_underlying_price_hint(
+                support_levels,
+                resistance_levels,
+                range_info,
+            ),
         )
-        if live_hint is not None:
-            underlying_hint = live_hint
 
         legs, spread_width = self._build_legs_from_ta(
             strategy_type=strategy_type,
@@ -866,11 +906,15 @@ class TradePlanner:
 
         def nearest_below(levels: List[float], ref: float) -> Optional[float]:
             below = [lvl for lvl in levels if lvl < ref]
-            return below[-1] if below else (levels[-1] if levels else None)
+            if below:
+                return below[-1]
+            return None
 
         def nearest_above(levels: List[float], ref: float) -> Optional[float]:
             above = [lvl for lvl in levels if lvl > ref]
-            return above[0] if above else (levels[0] if levels else None)
+            if above:
+                return above[0]
+            return None
 
         expiry_str = f"{dte_target}DTE"  # placeholder label
 
