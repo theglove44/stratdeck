@@ -34,7 +34,7 @@ class FakePricingAdapter:
 def test_enter_paper_trade_logs_position(tmp_path, monkeypatch):
     monkeypatch.setenv("STRATDECK_TRADING_MODE", "paper")
     monkeypatch.setenv("STRATDECK_DATA_MODE", "mock")
-    monkeypatch.setattr(positions, "POS_PATH", tmp_path / "positions.csv")
+    monkeypatch.setattr(positions, "POS_PATH", tmp_path / ".stratdeck" / "positions.json")
 
     fake_pricing = FakePricingAdapter()
     idea = TradeIdea(
@@ -75,4 +75,5 @@ def test_enter_paper_trade_logs_position(tmp_path, monkeypatch):
     assert row["credit"] == pytest.approx(0.70)
     assert row["qty"] == 2
     assert row["dte"] == positions._calc_dte("2099-01-01")
+    assert row["status"] == "open"
     assert "[provenance]" in (row.get("provenance") or "")

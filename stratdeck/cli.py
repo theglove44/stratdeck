@@ -5,6 +5,7 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from .tools import orders
 from .orchestrator import Orchestrator, OrchestratorConfig
 from .agents.scout import ScoutAgent
 from .agents.trader import TraderAgent
@@ -33,6 +34,7 @@ from .tools.scan_cache import (
 )
 from .tools.ta import load_last_scan
 from .tools.ideas import load_last_ideas, persist_last_ideas
+from .tools.positions import POS_PATH, PositionsStore
 
 LAST_TRADE_IDEAS_PATH = Path(".stratdeck/last_trade_ideas.json")
 
@@ -311,24 +313,69 @@ def enter(pick: Optional[int], qty: int, confirm: bool, live_order: bool):
         print(f"Broker Error: {result['broker_error']}")
 
 
-@cli.command()
-def positions():
-    from .tools.positions import list_positions
+@cli.group(name="positions", invoke_without_command=True)
+@click.pass_context
+def positions(ctx: click.Context) -> None:
+    """Paper positions utilities."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(positions_list)
 
-    rows = list_positions()
-    if not rows:
-        print("No open positions.")
+
+@positions.command("list")
+@click.option("--all", "include_all", is_flag=True, help="Include closed positions.")
+@click.option("--json-output", is_flag=True, help="Emit JSON instead of human-readable text.")
+def positions_list(include_all: bool, json_output: bool) -> None:
+    store = PositionsStore(POS_PATH)
+    pos_list = store.list_positions(status=None if include_all else "open")
+    if not pos_list:
+        click.echo("No positions found.")
         return
-    for r in rows:
-        line = (
-            f"#{r['id']} {r['symbol']} {r['strategy']} width {r['width']} "
-            f"credit {r['credit']} qty {r['qty']} status {r['status']}"
+    if json_output:
+        payload = [p.model_dump(mode="json") for p in pos_list]
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    click.echo("ID                                   Symbol  Strategy                       Qty  Status  Entry mid")
+    click.echo("-" * 90)
+    for pos in pos_list:
+        entry_mid = f"{pos.entry_mid:.2f}" if pos.entry_mid is not None else "-"
+        strategy_label = pos.strategy_id or pos.strategy or "-"
+        status_label = (pos.status or "open")
+        click.echo(
+            f"{pos.id:<36}  {pos.symbol:<6}  {strategy_label:<30}  "
+            f"{pos.qty:>3}  {status_label:<6}  {entry_mid}"
         )
-        if r.get("exit_credit"):
-            line += f" exit {r['exit_credit']}"
-        if r.get("pnl"):
-            line += f" pnl {r['pnl']}"
-        print(line)
+
+
+@positions.command("show")
+@click.option("--id", "position_id", required=True, help="Position id/UUID to show.")
+@click.option("--json-output", is_flag=True, help="Emit JSON instead of human-readable text.")
+def positions_show(position_id: str, json_output: bool) -> None:
+    store = PositionsStore(POS_PATH)
+    pos = store.get(position_id)
+    if pos is None:
+        raise click.ClickException(f"Position {position_id} not found.")
+
+    if json_output:
+        click.echo(json.dumps(pos.model_dump(mode="json"), indent=2, default=str))
+        return
+
+    click.echo(f"ID: {pos.id}")
+    click.echo(f"Symbol: {pos.symbol}")
+    click.echo(f"Trade symbol: {pos.trade_symbol or '-'}")
+    click.echo(f"Strategy: {pos.strategy_id or pos.strategy or '-'}")
+    click.echo(f"Direction: {pos.direction or '-'}")
+    click.echo(f"Qty: {pos.qty}")
+    click.echo(f"Entry mid: {pos.entry_mid}")
+    click.echo(f"Entry notional: {pos.entry_total}")
+    click.echo(f"Status: {pos.status}")
+    click.echo(f"Opened at: {pos.opened_at}")
+    if pos.legs:
+        click.echo("Legs:")
+        for leg in pos.legs:
+            click.echo(
+                f"  - {leg.side or '?'} {leg.type or '?'} {leg.strike} exp {leg.expiry} qty {leg.quantity} mid {leg.entry_mid}"
+            )
 
 
 @cli.command()
@@ -389,7 +436,7 @@ def report(daily: bool, days: int):
 
 @cli.command()
 @click.option(
-    "--position-id", type=int, required=True, help="Position ID from positions.csv"
+    "--position-id", type=str, required=True, help="Position ID/UUID from positions store"
 )
 @click.option(
     "--exit-credit",
@@ -849,78 +896,83 @@ def trade_ideas(
     is_flag=True,
     help="Place the order in LIVE mode instead of paper.",
 )
-def enter_auto(qty: int, confirm: bool, live_order: bool) -> None:
+@click.option(
+    "--index",
+    "idea_index",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Index of the idea from last_trade_ideas.json to enter.",
+)
+@click.option(
+    "--json-output",
+    is_flag=True,
+    help="Emit the created PaperPosition as JSON instead of text.",
+)
+def enter_auto(qty: int, confirm: bool, live_order: bool, idea_index: int, json_output: bool) -> None:
     """
-    Enter the best-ranked trade idea from the last trade-ideas scan
-    using TraderAgent's POP/credit_per_width scoring.
+    Enter a paper position from the most recent trade ideas.
     """
-    # 1. Load last_trade_ideas.json
-    if not LAST_TRADE_IDEAS_PATH.exists():
-        raise click.ClickException(
-            f"No trade ideas found. Run 'python -m stratdeck.cli trade-ideas' first "
-            f"to generate {LAST_TRADE_IDEAS_PATH}."
-        )
+    if live_order:
+        click.echo("[enter-auto] live orders are not supported; defaulting to paper mode.")
 
     try:
-        with LAST_TRADE_IDEAS_PATH.open("r", encoding="utf-8") as f:
-            ideas = json.load(f)
-    except Exception as exc:
-        raise click.ClickException(
-            f"Failed to load trade ideas from {LAST_TRADE_IDEAS_PATH}: {exc}"
-        ) from exc
-
-    if not isinstance(ideas, list) or not ideas:
-        raise click.ClickException(
-            f"{LAST_TRADE_IDEAS_PATH} does not contain a non-empty list of ideas."
-        )
-
-    # 2. Instantiate TraderAgent
-    agent = TraderAgent()
-
-    # 3. Use POP/credit_per_width-based ranking to pick the best idea
-    try:
-        best_idea = agent.pick_best_trade_idea(ideas)
-    except ValueError as exc:
-        # This happens if all ideas fail POP/credit filters
+        ideas = load_last_ideas(LAST_TRADE_IDEAS_PATH)
+    except FileNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
+    except Exception as exc:
+        raise click.ClickException(f"Failed to load trade ideas from {LAST_TRADE_IDEAS_PATH}: {exc}") from exc
 
-    # 4. Send the chosen idea through the normal enter flow
-    result = agent.enter_from_idea(
-        best_idea,
-        qty=qty,
-        confirm=confirm,
-        live_order=live_order,
-        portfolio=None,
+    if not ideas:
+        raise click.ClickException(f"{LAST_TRADE_IDEAS_PATH} does not contain any trade ideas.")
+
+    if idea_index < 0 or idea_index >= len(ideas):
+        raise click.ClickException(f"Idea index {idea_index} is out of range for {len(ideas)} ideas.")
+
+    idea = ideas[idea_index]
+    idea_dict = (
+        idea.to_dict()
+        if hasattr(idea, "to_dict")
+        else idea
+        if isinstance(idea, dict)
+        else getattr(idea, "__dict__", {}) or {}
+    )
+    summary_label = f"{idea_dict.get('trade_symbol') or idea_dict.get('symbol') or '?'} {idea_dict.get('strategy_id') or idea_dict.get('strategy') or ''}"
+
+    if not confirm:
+        proceed = click.confirm(f"Enter idea #{idea_index}: {summary_label} x{qty}?", default=False)
+        if not proceed:
+            click.echo("Aborted.")
+            raise SystemExit(1)
+
+    try:
+        result = orders.enter_paper_trade(idea, qty=qty)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise click.ClickException(f"Failed to enter paper trade: {exc}") from exc
+
+    position = result.get("position")
+    position_payload = (
+        position.model_dump(mode="json") if hasattr(position, "model_dump") else position if isinstance(position, dict) else {}
     )
 
-    # 5. Print a concise summary
-    click.echo("=== Enter Auto Result ===")
-    allowed = result.get("allowed") or result.get("compliance", {}).get("allowed")
-    click.echo(f"Allowed: {allowed}")
+    if json_output:
+        payload = position_payload or result
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
 
-    if "spread_plan" in result:
-        sp = result["spread_plan"]
-        sym = sp.get("symbol")
-        credit = sp.get("credit")
-        pop = sp.get("pop")
-        cpw = sp.get("credit_per_width") or sp.get("credit_per_spread")
-        click.echo(f"Symbol: {sym}")
-        if pop is not None:
-            click.echo(f"POP: {pop:.3f}")
-        if cpw is not None:
-            click.echo(f"Credit/Width: {cpw:.4f}")
-        if credit is not None:
-            click.echo(f"Estimated Credit: {credit}")
+    entry_mid = position_payload.get("entry_mid") or result.get("entry_mid_price")
+    entry_total = position_payload.get("entry_total") or result.get("total_credit")
 
-    violations = (
-        result.get("violations")
-        or result.get("compliance", {}).get("reasons")
-        or []
-    )
-    if violations:
-        click.echo("Compliance violations:")
-        for v in violations:
-            click.echo(f"- {v}")
+    click.echo("[enter-auto] Entered paper position:")
+    click.echo(f"  id: {result.get('position_id') or position_payload.get('id')}")
+    click.echo(f"  symbol: {result.get('symbol')}")
+    click.echo(f"  strategy: {idea_dict.get('strategy_id') or idea_dict.get('strategy')}")
+    click.echo(f"  qty: {qty}")
+    if entry_mid is not None:
+        side = "credit" if float(entry_mid) >= 0 else "debit"
+        click.echo(f"  entry_mid: {float(entry_mid):.2f} {side}")
+    if entry_total is not None:
+        click.echo(f"  entry_notional: ${float(entry_total):.2f}")
 
 
 @cli.command("enter-from-idea")

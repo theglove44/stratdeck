@@ -62,8 +62,8 @@ def summarize_daily(days: int = 1) -> Dict:
     win_rate = (wins / max(1, wins + losses)) * 100.0
 
     positions = list_positions()
-    open_positions = [p for p in positions if p.get("status", "OPEN") != "CLOSED"]
-    closed_positions = [p for p in positions if p.get("status", "OPEN") == "CLOSED"]
+    open_positions = [p for p in positions if (p.get("status") or "open").lower() != "closed"]
+    closed_positions = [p for p in positions if (p.get("status") or "open").lower() == "closed"]
 
     summary = {
         "opened": len(opens),
