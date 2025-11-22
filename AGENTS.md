@@ -10,11 +10,11 @@ Your job is to improve the codebase **safely**, keep tests green, and respect th
 - **Language:** Python 3.9
 - **Entry point:** `python -m stratdeck.cli ...`
 - **Domain:** Options trading (Tastytrade-style mechanics, defined-risk spreads, iron condors, etc.)
-- **Goal:** Multi-agent trading system (Scout / Trader / Risk / Compliance / Journal) that:
-  - Generates trade ideas from strategies + market data.
+- **Goal:** Multi-agent trading system (Scout / Trader / Risk / Compliance / Journal / Chartist / TradePlanner) that:
+  - Scans candidates, enriches them with technical analysis, and converts them into structured trade ideas.
   - Prices chains and computes metrics (POP, credit/width, greeks).
-  - Simulates or submits trades (paper only by default).
-  - Tracks positions, P&L, and journal entries.
+  - Simulates or previews orders (paper only by default; live preview/place remains optional/stubbed).
+  - Tracks positions, P&L, and journal entries in CSV-ledgers.
 
 This is a **trading system**, not a generic web app. Any work you do must preserve risk controls and never place real trades without explicit instructions.
 
@@ -45,6 +45,9 @@ When running commands, assume:
     - `live` = use real market data (only if explicitly asked).
   - `STRATDECK_DEBUG_STRATEGY_FILTERS`:
     - `1` enables verbose logging for strategy filters.
+- `.env` is auto-loaded by `stratdeck/__init__.py`; copy `.env.example` and set:
+  - `TASTY_USER`/`TASTY_PASS` (or `TT_USERNAME`/`TT_PASSWORD`) for live mode.
+  - `TASTY_ACCOUNT_ID` optionally (defaults resolved automatically).
 
 If you need to set env vars in examples, **default to mock/paper mode**:
 
@@ -94,15 +97,24 @@ Your default behavior:
 These are representative CLI entrypoints you can use to validate behavior:
 
 ```bash
-# scan for trade ideas
-python -m stratdeck.cli trade-ideas   --strategy short_put_spread_index_45d   --universe index_core   --json-output
+# scan and rank candidates (mock by default; live chains/quotes when enabled)
+python -m stratdeck.cli scan --top 5
+
+# compliance + paper fill (append --live-order only if explicitly asked)
+python -m stratdeck.cli enter --pick 1 --qty 1 --confirm
+
+# TA + trade-idea pipeline
+python -m stratdeck.cli chartist -s SPX -s XSP --json-output
+python -m stratdeck.cli scan-ta --json-output
+python -m stratdeck.cli trade-ideas --json-output ./ideas.json
+
+# journal / ledger helpers
+python -m stratdeck.cli positions
+python -m stratdeck.cli close --position-id 1 --exit-credit 0.5
+python -m stratdeck.cli report --daily
 
 # check the trading pipeline is wired correctly (paper / mock only)
 python -m stratdeck.cli doctor
-
-# (if implemented) show positions / reports
-python -m stratdeck.cli positions
-python -m stratdeck.cli report --daily
 ```
 
 Do **not** invent new CLI flags unless you’ve checked `stratdeck/cli.py` and ensured they’re consistent.
@@ -116,6 +128,9 @@ High-level layout (from the perspective of an AI agent):
 - `stratdeck/cli.py`  
   Click-based CLI entrypoint. Treat existing commands and options as a **public API**.  
   - You may add new subcommands, but avoid breaking existing ones without a clear migration.
+
+- `stratdeck/agents/`  
+  Scout, Trader, Risk, Compliance, Journal, TradePlanner, and related agent orchestration.
 
 - `stratdeck/strategy_engine.py`  
   - Builds strategy assignments and symbol tasks.
@@ -134,13 +149,19 @@ High-level layout (from the perspective of an AI agent):
   - `positions.py` – position store / CSV or DB logging.
   - `reports.py` – summaries / P&L.
   - `scan_cache.py` – caching scans / trade ideas.
-  - `ta.py`, `chartist.py`, `vol.py`, `greeks.py` – technical analysis & volatility tools.
+  - `ta.py`, `chartist.py`, `vol.py`, `greeks.py` – technical analysis & volatility tools powering ChartistAgent and TA summaries.
+
+- `stratdeck/conf/`  
+  Prompt templates (e.g., `prompts/chartist_system.md`, `chartist_report.md`) and configuration.
 
 - `stratdeck/config/` & `conf/`  
   YAML / config files for:
   - Universes (e.g. `index_core`).
   - Strategies & defaults.
   - Risk limits.
+
+- `stratdeck/data/`  
+  Mock/ledger CSVs (`positions.csv`, `journal.csv`) used for paper mode and reporting.
 
 - `tests/`  
   Python unit / integration tests.  
@@ -179,6 +200,7 @@ These rules matter more than code style. Follow them strictly.
   - Add or change code to place **live trades** without explicit instructions.
   - Hard-code real account IDs, API keys, or secrets.
   - Remove existing safety checks around position sizing, delta exposure, or buying-power usage.
+  - Default to `--live-order` or otherwise bypass paper-ledger flow without consent.
 
 - **OK to do:**
   - Improve the **paper trading** pipeline.

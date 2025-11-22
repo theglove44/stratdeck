@@ -2,7 +2,10 @@ from typing import Dict, List
 
 import pytest
 
-from stratdeck.agents.trade_planner import TradePlanner, get_underlying_price
+from stratdeck.agents.trade_planner import (
+    TradePlanner,
+    resolve_underlying_price_hint,
+)
 
 
 def _scan_row(symbol: str, low: float, high: float) -> Dict:
@@ -67,7 +70,7 @@ def test_underlying_hint_live_falls_back_to_last(monkeypatch):
     calls: List[str] = []
 
     class FakeProvider:
-        def get_quote(self, symbol: str):
+        def get_quote(self, symbol: str):  # pragma: no cover - used via planner
             calls.append(symbol)
             return {"mid": None, "last": 640.0}
 
@@ -81,47 +84,110 @@ def test_underlying_hint_live_falls_back_to_last(monkeypatch):
     assert calls == ["XSP"]
 
 
-def test_get_underlying_price_logs_live_quote(caplog):
+def test_resolve_underlying_price_hint_prefers_live_over_ta(caplog):
     caplog.set_level("INFO")
-    calls: List[str] = []
 
-    def fake_fetcher(symbol: str):
-        calls.append(symbol)
-        return {"mid": 123.45, "last": 122.0}
+    class FakeProvider:
+        def get_quote(self, symbol: str):
+            return {"mid": 123.45, "mark": 120.0, "last": 119.0}
 
-    price = get_underlying_price(
-        data_symbol="SPY",
-        trade_symbol="SPY",
-        data_mode="live",
-        quote_fetcher=fake_fetcher,
+    price = resolve_underlying_price_hint(
+        symbol="SPX",
+        data_symbol="^GSPC",
+        provider=FakeProvider(),
+        ta_price_hint=111.0,
     )
+
     assert price == pytest.approx(123.45)
-    assert calls == ["SPY"]
-    assert any(
-        "live quote used" in rec.message and "symbol=SPY" in rec.message
-        for rec in caplog.records
+    assert any("live quote used" in rec.message for rec in caplog.records)
+
+
+def test_resolve_underlying_price_hint_uses_ta_when_provider_missing():
+    price = resolve_underlying_price_hint(
+        symbol="AAPL",
+        data_symbol="AAPL",
+        provider=None,
+        ta_price_hint=150.5,
     )
+    assert price == pytest.approx(150.5)
 
 
-def test_get_underlying_price_spx_fallback_to_xsp(caplog):
+def test_resolve_underlying_price_hint_falls_back_to_ta_on_error():
+    class FailingProvider:
+        def get_quote(self, symbol: str):
+            raise RuntimeError("boom")
+
+    price = resolve_underlying_price_hint(
+        symbol="AAPL",
+        data_symbol="AAPL",
+        provider=FailingProvider(),
+        ta_price_hint=151.5,
+    )
+    assert price == pytest.approx(151.5)
+
+
+def test_resolve_underlying_price_hint_handles_mark_and_last():
+    class MarkOnlyProvider:
+        def get_quote(self, symbol: str):
+            return {"mid": None, "mark": 55.0, "last": 50.0}
+
+    price_mark = resolve_underlying_price_hint(
+        symbol="MSFT",
+        data_symbol="MSFT",
+        provider=MarkOnlyProvider(),
+        ta_price_hint=None,
+    )
+    assert price_mark == pytest.approx(55.0)
+
+    class LastOnlyProvider:
+        def get_quote(self, symbol: str):
+            return {"mid": None, "mark": None, "last": 44.0}
+
+    price_last = resolve_underlying_price_hint(
+        symbol="MSFT",
+        data_symbol="MSFT",
+        provider=LastOnlyProvider(),
+        ta_price_hint=None,
+    )
+    assert price_last == pytest.approx(44.0)
+
+
+def test_resolve_underlying_price_hint_spx_fallback_to_xsp(caplog):
     caplog.set_level("INFO")
     calls: List[str] = []
 
-    def fake_fetcher(symbol: str):
-        calls.append(symbol)
-        if symbol == "SPX":
-            raise RuntimeError("rate limit")
-        return {"mid": 42.0}
+    class FakeProvider:
+        def get_quote(self, symbol: str):
+            calls.append(symbol)
+            if symbol == "SPX":
+                raise RuntimeError("rate limit")
+            return {"mid": 42.0}
 
-    price = get_underlying_price(
+    price = resolve_underlying_price_hint(
+        symbol="SPX",
         data_symbol="SPX",
-        trade_symbol="SPX",
-        data_mode="live",
-        quote_fetcher=fake_fetcher,
+        provider=FakeProvider(),
+        ta_price_hint=None,
     )
 
     assert price == pytest.approx(420.0)
     assert calls == ["SPX", "XSP"]
-    assert any(
-        "spx fallback via xsp" in rec.message for rec in caplog.records
+    assert any("spx fallback via xsp" in rec.message for rec in caplog.records)
+
+
+def test_resolve_underlying_price_hint_warns_when_live_and_ta_missing(caplog):
+    caplog.set_level("WARNING")
+
+    class EmptyProvider:
+        def get_quote(self, symbol: str):
+            return {"mid": None, "mark": None, "last": None}
+
+    price = resolve_underlying_price_hint(
+        symbol="QQQ",
+        data_symbol="QQQ",
+        provider=EmptyProvider(),
+        ta_price_hint=None,
     )
+
+    assert price == 0.0
+    assert any("fallback missing live+ta" in rec.message for rec in caplog.records)
