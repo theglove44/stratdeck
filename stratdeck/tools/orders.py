@@ -381,7 +381,12 @@ def enter_paper_trade(
     if mode != "paper":
         raise ValueError("Live trading not implemented here. Set STRATDECK_TRADING_MODE=paper.")
 
-    idea_dict = trade_idea.to_dict() if hasattr(trade_idea, "to_dict") else getattr(trade_idea, "__dict__", {}) or {}
+    if isinstance(trade_idea, dict):
+        idea_dict = dict(trade_idea)
+    elif hasattr(trade_idea, "to_dict"):
+        idea_dict = trade_idea.to_dict()
+    else:
+        idea_dict = getattr(trade_idea, "__dict__", {}) or {}
 
     symbol = idea_dict.get("trade_symbol") or idea_dict.get("symbol")
     if not symbol:
@@ -447,21 +452,29 @@ def enter_paper_trade(
     total_credit = round(net_mid * qty * 100.0, 2)
     provenance = _provenance_snapshot(idea_dict)
 
+    spread_plan_payload = {
+        "symbol": symbol,
+        "trade_symbol": idea_dict.get("trade_symbol") or symbol,
+        "underlying": underlying,
+        "strategy": strategy,
+        "strategy_id": idea_dict.get("strategy_id"),
+        "universe_id": idea_dict.get("universe_id"),
+        "direction": direction,
+        "expiry": expiry or "",
+        "spread_width": spread_width or idea_dict.get("spread_width") or 0.0,
+        "width": spread_width or idea_dict.get("spread_width") or 0.0,
+        "credit": net_mid,
+        "dte": dte,
+        "provenance": provenance,
+        "notes": idea_dict.get("notes"),
+        "target_delta": idea_dict.get("target_delta"),
+        "account_id": account_id,
+        "underlying_price_hint": idea_dict.get("underlying_price_hint"),
+        "legs": leg_quotes or legs,
+    }
+
     pos = add_position(
-        {
-            "symbol": symbol,
-            "underlying": underlying,
-            "strategy": strategy,
-            "direction": direction,
-            "expiry": expiry or "",
-            "width": spread_width or 0.0,
-            "credit": net_mid,
-            "dte": dte,
-            "provenance": provenance,
-            "notes": idea_dict.get("notes"),
-            "target_delta": idea_dict.get("target_delta"),
-            "account_id": account_id,
-        },
+        spread_plan_payload,
         qty=qty,
         entry_mid_price=net_mid,
     )
@@ -483,6 +496,7 @@ def enter_paper_trade(
         "provenance": provenance,
         "trading_mode": mode,
         "data_mode": active_data_mode,
+        "position": pos.get("position"),
     }
 
 # ========= Placement =========
