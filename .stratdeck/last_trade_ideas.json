@@ -5,36 +5,36 @@
     "trade_symbol": "XSP",
     "strategy": "short_put_spread",
     "direction": "bullish",
-    "vol_context": "normal",
-    "rationale": "XSP: slightly_bullish with downside levels providing support \u2013 bullish short put spread structured below key support.",
+    "vol_context": "elevated",
+    "rationale": "XSP: neutral with downside levels providing support \u2013 bullish short put spread structured below key support.",
     "legs": [
       {
         "side": "short",
         "type": "put",
-        "strike": 655.3,
+        "strike": 97.73805795520131,
         "expiry": "45DTE",
         "quantity": 1
       },
       {
         "side": "long",
         "type": "put",
-        "strike": 650.3,
+        "strike": 92.73805795520131,
         "expiry": "45DTE",
         "quantity": 1
       }
     ],
-    "underlying_price_hint": 660.3,
+    "underlying_price_hint": 97.77829173549132,
     "dte_target": 45,
     "spread_width": 5.0,
     "target_delta": 0.2,
     "notes": [
-      "Trend regime: choppy_trend, TA bias: 0.19, vol regime: normal.",
-      "Volatility context (for options): normal.",
+      "Trend regime: downtrend, TA bias: -0.01, vol regime: expansion.",
+      "Volatility context (for options): elevated.",
       "[provenance] template=short_put_spread_index_45d universe=index_core"
     ],
-    "pop": 0.96,
-    "credit_per_width": 0.288,
-    "estimated_credit": 1.44,
+    "pop": 0.56,
+    "credit_per_width": 0.002,
+    "estimated_credit": 0.01,
     "strategy_id": "short_put_spread_index_45d",
     "universe_id": "index_core",
     "filters_passed": true,
@@ -51,29 +51,29 @@
     "strategy": "short_put_spread",
     "direction": "bullish",
     "vol_context": "normal",
-    "rationale": "SPX: slightly_bullish with downside levels providing support \u2013 bullish short put spread structured below key support.",
+    "rationale": "SPX: slightly_bearish with downside levels providing support \u2013 bullish short put spread structured below key support.",
     "legs": [
       {
         "side": "short",
         "type": "put",
-        "strike": 6574.31982421875,
+        "strike": 100.75555433260004,
         "expiry": "45DTE",
         "quantity": 1
       },
       {
         "side": "long",
         "type": "put",
-        "strike": 6569.31982421875,
+        "strike": 95.75555433260004,
         "expiry": "45DTE",
         "quantity": 1
       }
     ],
-    "underlying_price_hint": 6607.3,
+    "underlying_price_hint": 102.7005675996506,
     "dte_target": 45,
     "spread_width": 5.0,
     "target_delta": 0.2,
     "notes": [
-      "Trend regime: choppy_trend, TA bias: 0.19, vol regime: normal.",
+      "Trend regime: downtrend, TA bias: -0.17, vol regime: normal.",
       "Volatility context (for options): normal.",
       "[provenance] template=short_put_spread_index_45d universe=index_core"
     ],

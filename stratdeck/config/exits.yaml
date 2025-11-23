@@ -1,0 +1,67 @@
+defaults:
+  short_premium:
+    ivr_soft_exit_below: 20.0
+
+strategies:
+  short_put_spread_index_45d:
+    strategy_family: "credit_spread"
+    is_short_premium: true
+    profit_target_basis: "credit"
+    profit_target_pct: 0.5
+    dte_exit: 21
+    ivr_soft_exit_below: 20.0
+    loss_management_style: "none"
+
+  short_strangle_index_45d:
+    strategy_family: "short_strangle"
+    is_short_premium: true
+    profit_target_basis: "credit"
+    profit_target_pct: 0.5
+    dte_exit: 21
+    ivr_soft_exit_below: 20.0
+    loss_management_style: "roll_adjust"
+
+  iron_condor_index_45d:
+    strategy_family: "iron_condor"
+    is_short_premium: true
+    profit_target_basis: "credit"
+    profit_target_pct: 0.5
+    dte_exit: 21
+    ivr_soft_exit_below: 20.0
+    loss_management_style: "none"
+
+  credit_spread_equity_30d:
+    strategy_family: "credit_spread"
+    is_short_premium: true
+    profit_target_basis: "credit"
+    profit_target_pct: 0.5
+    dte_exit: 21
+    ivr_soft_exit_below: 20.0
+    loss_management_style: "none"
+
+  ratio_spread_index_45d:
+    strategy_family: "ratio_spread"
+    is_short_premium: true
+    profit_target_basis: "max_profit"
+    profit_target_pct: 0.3
+    dte_exit: 21
+    ivr_soft_exit_below: 20.0
+    loss_management_style: "roll_adjust"
+
+  broken_wing_butterfly_index_45d:
+    strategy_family: "bwb"
+    is_short_premium: true
+    profit_target_basis: "max_profit"
+    profit_target_pct: 0.25
+    dte_exit: 21
+    ivr_soft_exit_below: 20.0
+    loss_management_style: "none"
+
+  diagonal_spread_index:
+    strategy_family: "diagonal"
+    is_short_premium: false
+    profit_target_basis: "max_profit"
+    profit_target_pct: 0.25
+    dte_exit: 21
+    ivr_soft_exit_below: null
+    loss_management_style: "roll_near_leg"
