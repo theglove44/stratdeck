@@ -366,6 +366,15 @@ def compute_position_metrics(
         contract_multiplier=contract_multiplier,
     )
 
+    if (
+        max_profit_per_contract is None
+        and exit_rules.profit_target_basis == "credit"
+        and exit_rules.is_short_premium
+    ):
+        credit_per_contract = entry_mid * contract_multiplier if entry_mid is not None else None
+        if credit_per_contract is not None and credit_per_contract > 0:
+            max_profit_per_contract = credit_per_contract
+
     max_profit_total = position.max_profit_total
     if max_profit_total is None and max_profit_per_contract is not None:
         max_profit_total = max_profit_per_contract * qty

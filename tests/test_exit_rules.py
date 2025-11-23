@@ -67,3 +67,37 @@ def test_exit_rules_ivr_soft_exit_marks_reason_only():
     assert decision.action == "hold"
     assert decision.reason == "IVR_BELOW_SOFT_EXIT"
     assert any("IVR" in msg for msg in decision.triggered_rules)
+
+
+def test_exit_rules_credit_basis_uses_credit_for_widthless_short_premium():
+    metrics = _base_metrics(
+        strategy_family="short_strangle",
+        max_profit_total=100.0,
+        max_loss_total=None,
+        unrealized_pl_total=50.0,
+        pnl_pct_of_max_profit=None,
+        dte=30.0,
+        ivr=30.0,
+    )
+    decision = evaluate_exit_rules(metrics, _rules(strategy_family="short_strangle"))
+
+    assert decision.action == "exit"
+    assert decision.reason == "TARGET_PROFIT_HIT"
+    assert any("Profit target" in msg for msg in decision.triggered_rules)
+
+
+def test_exit_rules_credit_basis_waits_until_target_hit():
+    metrics = _base_metrics(
+        strategy_family="short_strangle",
+        max_profit_total=100.0,
+        max_loss_total=None,
+        unrealized_pl_total=40.0,
+        pnl_pct_of_max_profit=None,
+        dte=30.0,
+        ivr=30.0,
+    )
+    decision = evaluate_exit_rules(metrics, _rules(strategy_family="short_strangle"))
+
+    assert decision.action == "hold"
+    assert decision.reason == "HOLD"
+    assert decision.triggered_rules == []

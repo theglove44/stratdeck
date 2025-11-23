@@ -27,6 +27,29 @@ class StubProvider:
         return self._ivr
 
 
+class StrangleProvider:
+    def __init__(self, call_mid: float = 0.25, put_mid: float = 0.25, ivr: float = 32.0):
+        self.call_mid = call_mid
+        self.put_mid = put_mid
+        self._ivr = ivr
+
+    def get_option_chain(self, symbol: str, expiry: str = None):
+        return {
+            "calls": [
+                {"strike": 105.0, "mid": self.call_mid},
+            ],
+            "puts": [
+                {"strike": 95.0, "mid": self.put_mid},
+            ],
+        }
+
+    def get_quote(self, symbol: str):
+        return {"mark": 100.0}
+
+    def get_ivr(self, symbol: str):
+        return self._ivr
+
+
 def test_compute_position_metrics_credit_spread():
     position = PaperPosition(
         symbol="XSP",
@@ -61,3 +84,38 @@ def test_compute_position_metrics_credit_spread():
     assert metrics.dte and metrics.dte > 30
     assert metrics.ivr == pytest.approx(35.0)
     assert metrics.strategy_family == "credit_spread"
+
+
+def test_compute_position_metrics_widthless_credit_uses_entry_credit():
+    position = PaperPosition(
+        symbol="SPY",
+        trade_symbol="SPY",
+        strategy_id="short_strangle",
+        universe_id="index_core",
+        direction="neutral",
+        legs=[
+            PaperPositionLeg(side="short", type="call", strike=105.0, expiry="2100-01-01", quantity=1),
+            PaperPositionLeg(side="short", type="put", strike=95.0, expiry="2100-01-01", quantity=1),
+        ],
+        qty=1,
+        entry_mid=1.0,
+    )
+    provider = StrangleProvider(call_mid=0.25, put_mid=0.25, ivr=30.0)
+    now = datetime(2099, 12, 1, tzinfo=timezone.utc)
+    rules = load_exit_rules("short_strangle")
+    metrics = compute_position_metrics(
+        position,
+        now=now,
+        provider=provider,
+        vol_snapshot={"SPY": 0.3},
+        exit_rules=rules,
+    )
+
+    assert metrics.current_mid == pytest.approx(0.5)
+    assert metrics.unrealized_pl_total == pytest.approx(50.0)
+    assert metrics.max_profit_total == pytest.approx(100.0)
+    assert metrics.max_loss_total is None
+    assert metrics.pnl_pct_of_max_profit == pytest.approx(0.5)
+    assert metrics.dte and metrics.dte > 30
+    assert metrics.ivr == pytest.approx(30.0)
+    assert metrics.strategy_family == "short_strangle"
