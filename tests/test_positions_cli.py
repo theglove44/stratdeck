@@ -76,6 +76,7 @@ def test_enter_auto_creates_position(tmp_path, monkeypatch):
     assert payload["symbol"] == "XSP"
     assert payload["strategy_id"] == "short_put_spread_index_45d"
     assert payload["status"] == "open"
+    assert payload.get("expiry")
     assert fake_pricing.calls, "pricing adapter should be invoked"
 
     positions_file = tmp_path / ".stratdeck" / "positions.json"
@@ -83,6 +84,8 @@ def test_enter_auto_creates_position(tmp_path, monkeypatch):
     assert len(saved) == 1
     assert saved[0]["entry_mid"] == pytest.approx(1.5)
     assert saved[0]["status"] == "open"
+    assert saved[0]["expiry"]
+    assert saved[0]["dte"] is not None
 
 
 def test_enter_auto_requires_last_trade_ideas(tmp_path, monkeypatch):
@@ -108,3 +111,13 @@ def test_positions_list_json_output(tmp_path, monkeypatch):
     payload = json.loads(result.output)
     assert isinstance(payload, list)
     assert payload[0]["symbol"] == "SPY"
+
+
+def test_positions_list_json_output_empty(tmp_path, monkeypatch):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.cli, ["positions", "list", "--json-output"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload == []

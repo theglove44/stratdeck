@@ -1,7 +1,7 @@
 # tools/orders.py
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import os
@@ -78,6 +78,43 @@ def _calc_dte(expiry: Optional[str]) -> Optional[int]:
         return None
     today = datetime.now(timezone.utc).date()
     return max((d - today).days, 0)
+
+
+def _infer_expiry_str_from_idea(idea: Any, now: datetime) -> Optional[str]:
+    """
+    Infer a real calendar expiry date string (YYYY-MM-DD) for a PaperPosition.
+
+    Priority:
+    1) Real calendar expiries on legs (YYYY-MM-DD).
+    2) Fallback: dte_target days from now.
+    3) Otherwise: None (no expiry known).
+    """
+    legs = getattr(idea, "legs", None)
+    if legs is None and isinstance(idea, dict):
+        legs = idea.get("legs", [])
+    # 1) Try real calendar expiries from legs
+    for leg in legs or []:
+        exp = getattr(leg, "expiry", None) if not isinstance(leg, dict) else leg.get("expiry")
+        if not isinstance(exp, str):
+            continue
+
+        # Accept simple ISO-like dates only, reject things like "45DTE"
+        if len(exp) == 10 and exp[4] == "-" and exp[7] == "-":
+            # Let Pydantic parse it later; we just keep the YYYY-MM-DD string
+            return exp
+
+    # 2) Fallback: use dte_target if present
+    dte_target = getattr(idea, "dte_target", None)
+    if dte_target is None and isinstance(idea, dict):
+        dte_target = idea.get("dte_target")
+    if dte_target:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        expiry_date = (now + timedelta(days=dte_target)).date()
+        return expiry_date.isoformat()
+
+    # 3) No usable info
+    return None
 
 
 def _leg_to_dict(leg: Any) -> Dict[str, Any]:
@@ -400,12 +437,9 @@ def enter_paper_trade(
 
     raw_legs = getattr(trade_idea, "legs", None) or idea_dict.get("legs", []) or []
     legs = [_leg_to_dict(l) for l in raw_legs]
-    expiry = None
-    for leg in legs:
-        if leg.get("expiry"):
-            expiry = str(leg["expiry"])
-            break
-    dte = _calc_dte(expiry)
+    now = datetime.now(timezone.utc)
+    expiry_str = _infer_expiry_str_from_idea(trade_idea, now)
+    dte = _calc_dte(expiry_str)
     target_dte = idea_dict.get("dte_target") or dte
 
     active_data_mode = (data_mode or os.getenv("STRATDECK_DATA_MODE", "mock")).lower()
@@ -460,7 +494,7 @@ def enter_paper_trade(
         "strategy_id": idea_dict.get("strategy_id"),
         "universe_id": idea_dict.get("universe_id"),
         "direction": direction,
-        "expiry": expiry or "",
+        "expiry": expiry_str or "",
         "spread_width": spread_width or idea_dict.get("spread_width") or 0.0,
         "width": spread_width or idea_dict.get("spread_width") or 0.0,
         "credit": net_mid,
@@ -487,7 +521,7 @@ def enter_paper_trade(
         "strategy": strategy,
         "direction": direction,
         "qty": qty,
-        "expiry": expiry,
+        "expiry": expiry_str,
         "dte": dte,
         "entry_mid_price": round(net_mid, 4),
         "total_credit": total_credit,

@@ -119,3 +119,36 @@ def test_compute_position_metrics_widthless_credit_uses_entry_credit():
     assert metrics.dte and metrics.dte > 30
     assert metrics.ivr == pytest.approx(30.0)
     assert metrics.strategy_family == "short_strangle"
+
+
+def test_compute_position_metrics_prefers_position_expiry():
+    expiry = datetime(2100, 1, 10, tzinfo=timezone.utc)
+    position = PaperPosition(
+        symbol="XSP",
+        trade_symbol="XSP",
+        strategy_id="short_put_spread_index_45d",
+        universe_id="index_core",
+        direction="bullish",
+        legs=[
+            PaperPositionLeg(side="short", type="put", strike=100.0, quantity=1),
+            PaperPositionLeg(side="long", type="put", strike=95.0, quantity=1),
+        ],
+        qty=1,
+        entry_mid=1.5,
+        spread_width=5.0,
+        expiry=expiry,
+    )
+    provider = StubProvider(chain_mid=1.0, ivr=35.0)
+    now = datetime(2100, 1, 1, tzinfo=timezone.utc)
+    rules = load_exit_rules("short_put_spread_index_45d")
+    metrics = compute_position_metrics(
+        position,
+        now=now,
+        provider=provider,
+        vol_snapshot={"XSP": 0.25},
+        exit_rules=rules,
+    )
+
+    expected_dte = (expiry - now).total_seconds() / 86400.0
+    assert metrics.dte == pytest.approx(expected_dte)
+    assert metrics.expiry == expiry

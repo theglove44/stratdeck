@@ -101,3 +101,12 @@ def test_exit_rules_credit_basis_waits_until_target_hit():
     assert decision.action == "hold"
     assert decision.reason == "HOLD"
     assert decision.triggered_rules == []
+
+
+def test_exit_rules_ignore_missing_dte():
+    metrics = _base_metrics(dte=None, ivr=30.0, unrealized_pl_total=0.0, pnl_pct_of_max_profit=0.0)
+    decision = evaluate_exit_rules(metrics, _rules())
+
+    assert decision.action == "hold"
+    assert decision.reason == "HOLD"
+    assert not any("DTE" in msg for msg in decision.triggered_rules)

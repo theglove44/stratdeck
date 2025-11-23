@@ -246,6 +246,7 @@ class TradeIdea:
     target_delta: Optional[float] = None
     notes: List[str] = None
     # NEW: chain-based metrics for TraderAgent / selection logic
+    ivr: Optional[float] = None
     pop: Optional[float] = None
     credit_per_width: Optional[float] = None
     estimated_credit: Optional[float] = None  # total net credit for the structure
@@ -606,6 +607,7 @@ class TradePlanner:
             spread_width=spread_width,
             target_delta=0.20,
             notes=notes,
+            ivr=ivr,
             # NEW: expose chain-based metrics to TraderAgent
             pop=pop,
             credit_per_width=credit_per_width,

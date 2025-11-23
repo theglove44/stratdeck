@@ -151,10 +151,13 @@ def _to_percent(value: Optional[float]) -> Optional[float]:
 
 def _parse_expiry(position: PaperPosition) -> Tuple[Optional[str], Optional[datetime]]:
     expiry_str: Optional[str] = None
-    for leg in position.legs or []:
-        if leg.expiry:
-            expiry_str = str(leg.expiry)
-            break
+    if getattr(position, "expiry", None):
+        expiry_str = str(position.expiry)
+    if expiry_str is None:
+        for leg in position.legs or []:
+            if leg.expiry:
+                expiry_str = str(leg.expiry)
+                break
     if expiry_str is None and getattr(position, "provenance", None):
         expiry_str = getattr(position.provenance, "get", lambda *_: None)("expiry")
     expiry_dt: Optional[datetime] = None
@@ -317,6 +320,8 @@ def compute_position_metrics(
     exit_rules: Optional[ExitRulesConfig] = None,
 ) -> PositionMetrics:
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     provider = provider or get_provider()
     exit_rules = exit_rules or load_exit_rules(position.strategy_id or "")
     contract_multiplier = float(getattr(position, "contract_multiplier", 100.0) or 100.0)
@@ -325,8 +330,10 @@ def compute_position_metrics(
     if expiry_str is None and position.dte is not None:
         expiry_str = _nearest_expiry(int(position.dte))
     dte_val = None
-    if expiry_dt:
-        dte_val = max((expiry_dt - now).total_seconds() / 86400.0, 0.0)
+    if expiry_dt is not None:
+        expiry_dt = expiry_dt if expiry_dt.tzinfo is not None else expiry_dt.replace(tzinfo=timezone.utc)
+        now_dt = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        dte_val = (expiry_dt - now_dt).total_seconds() / 86400.0
     elif position.dte is not None:
         try:
             dte_val = float(position.dte)
