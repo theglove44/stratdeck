@@ -112,6 +112,8 @@ class PaperPosition(BaseModel):
     qty: int = 1
     entry_mid: float
     entry_total: Optional[float] = None
+    max_profit_total: Optional[float] = None
+    max_loss_total: Optional[float] = None
     spread_width: Optional[float] = None
     dte: Optional[int] = None
     opened_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -119,6 +121,7 @@ class PaperPosition(BaseModel):
     closed_at: Optional[datetime] = None
     exit_mid: Optional[float] = None
     exit_reason: Optional[str] = None
+    realized_pl_total: Optional[float] = None
     notes: Optional[str] = None
     provenance: Optional[Any] = None
     underlying_price_hint: Optional[float] = None
@@ -189,6 +192,9 @@ class PositionsStore:
         status = status.lower()
         return [p for p in self.positions if (p.status or "").lower() == status]
 
+    def get_open_positions(self) -> List[PaperPosition]:
+        return self.list_positions(status="open")
+
     def add_position(self, position: PaperPosition) -> PaperPosition:
         self.positions.append(position)
         self._persist()
@@ -209,6 +215,9 @@ class PositionsStore:
             if str(pos.id) == str(position_id):
                 return pos
         return None
+
+    def update_position(self, position: PaperPosition) -> PaperPosition:
+        return self.upsert(position)
 
 
 def _position_from_plan(spread_plan: Dict[str, Any], qty: int, entry_mid_price: Optional[float]) -> PaperPosition:
@@ -292,7 +301,7 @@ def list_positions(status: Optional[str] = None) -> List[Dict[str, Any]]:
     return [_legacy_dict(p) for p in positions]
 
 
-def close_position(position_id: str, exit_credit: float) -> Dict[str, Any]:
+def close_position(position_id: str, exit_credit: float, exit_reason: Optional[str] = None) -> Dict[str, Any]:
     store = PositionsStore(POS_PATH)
     target_id = str(position_id)
     position = store.get(target_id)
@@ -308,9 +317,23 @@ def close_position(position_id: str, exit_credit: float) -> Dict[str, Any]:
 
     pnl = (float(position.entry_mid) - exit_price) * int(position.qty) * float(position.contract_multiplier)
 
+    if position.max_profit_total is None and position.entry_total is not None:
+        try:
+            position.max_profit_total = float(position.entry_total)
+        except Exception:
+            position.max_profit_total = None
+    if position.max_loss_total is None and position.spread_width not in ("", None):
+        try:
+            width_total = float(position.spread_width) * float(position.contract_multiplier) * int(position.qty)
+            position.max_loss_total = max(width_total - float(position.entry_mid) * float(position.contract_multiplier) * int(position.qty), 0.0)
+        except Exception:
+            position.max_loss_total = position.max_loss_total
+
     position.status = "closed"
     position.exit_mid = exit_price
     position.closed_at = datetime.now(timezone.utc)
+    position.realized_pl_total = pnl
+    position.exit_reason = exit_reason or position.exit_reason or "manual"
 
     store.upsert(position)
 
@@ -321,4 +344,6 @@ def close_position(position_id: str, exit_credit: float) -> Dict[str, Any]:
         "exit_credit": exit_price,
         "qty": position.qty,
         "pnl": pnl,
+        "exit_reason": position.exit_reason,
+        "realized_pl_total": pnl,
     }

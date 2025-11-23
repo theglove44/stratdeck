@@ -1,6 +1,7 @@
 # stratdeck/cli.py
 import click
 import json
+from datetime import datetime, timezone
 import logging
 from dataclasses import asdict
 from pathlib import Path
@@ -34,9 +35,12 @@ from .tools.scan_cache import (
 )
 from .tools.ta import load_last_scan
 from .tools.ideas import load_last_ideas, persist_last_ideas
-from .tools.positions import POS_PATH, PositionsStore
+from .tools.positions import POS_PATH, PaperPosition, PositionsStore
+from .tools.position_monitor import compute_position_metrics, evaluate_exit_rules, load_exit_rules
+from .tools.vol import load_snapshot
 
 LAST_TRADE_IDEAS_PATH = Path(".stratdeck/last_trade_ideas.json")
+LAST_POSITION_MONITORING_PATH = Path(".stratdeck/last_position_monitoring.json")
 
 
 def _fmt_row(c: dict) -> str:
@@ -346,6 +350,203 @@ def positions_list(include_all: bool, json_output: bool) -> None:
             f"{pos.qty:>3}  {status_label:<6}  {entry_mid}"
         )
 
+
+def _monitor_snapshot(
+    open_positions: List[PaperPosition],
+    provider: Any,
+    snapshot: Dict[str, float],
+    now: datetime,
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for pos in open_positions:
+        rules = load_exit_rules(pos.strategy_id or pos.strategy or "")
+        metrics = compute_position_metrics(
+            pos,
+            now=now,
+            provider=provider,
+            vol_snapshot=snapshot,
+            exit_rules=rules,
+        )
+        decision = evaluate_exit_rules(metrics, rules)
+        items.append(
+            {
+                "position": pos.model_dump(mode="json"),
+                "metrics": metrics.model_dump(mode="json"),
+                "decision": decision.model_dump(mode="json"),
+            }
+        )
+    return items
+
+
+@positions.command("monitor")
+@click.option("--json-output", is_flag=True, help="Emit JSON instead of human-readable text.")
+def positions_monitor(json_output: bool) -> None:
+    store = PositionsStore(POS_PATH)
+    open_positions = store.get_open_positions()
+    if not open_positions:
+        click.echo("No open positions found.")
+        return
+
+    provider = get_provider()
+    snapshot = load_snapshot()
+    now = datetime.now(timezone.utc)
+
+    items = _monitor_snapshot(open_positions, provider, snapshot, now)
+
+    LAST_POSITION_MONITORING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAST_POSITION_MONITORING_PATH.write_text(json.dumps(items, indent=2, default=str), encoding="utf-8")
+
+    if json_output:
+        click.echo(json.dumps(items, indent=2, default=str))
+        return
+
+    click.echo("ID                                   Symbol  Strategy                       DTE   P/L($)   %MaxP  IVR   Action  Reason")
+    click.echo("-" * 110)
+    for item in items:
+        pos = item["position"]
+        metrics = item["metrics"]
+        decision = item["decision"]
+        dte_val = metrics.get("dte")
+        pnl_total = metrics.get("unrealized_pl_total")
+        pct_mp = metrics.get("pnl_pct_of_max_profit")
+        ivr_val = metrics.get("ivr")
+        dte_label = f"{float(dte_val):.1f}" if dte_val is not None else "-"
+        pnl_label = f"{pnl_total:.2f}" if pnl_total is not None else "-"
+        pct_label = f"{pct_mp * 100:.0f}%" if pct_mp not in (None, 0) else "-"
+        ivr_label = f"{ivr_val:.1f}" if ivr_val is not None else "-"
+        click.echo(
+            f"{pos.get('id',''):<36}  {pos.get('symbol',''):<6}  {pos.get('strategy_id') or pos.get('strategy') or '-':<30}  "
+            f"{dte_label:>4}  "
+            f"{pnl_label:>7}  "
+            f"{pct_label:>5}  "
+            f"{ivr_label:>5}  "
+            f"{decision.get('action','').upper():<6}  {decision.get('reason','-')}"
+        )
+
+
+@positions.command("close-auto")
+@click.option("--dry-run", is_flag=True, help="Evaluate exits without persisting any changes.")
+@click.option("--json-output", is_flag=True, help="Emit JSON instead of human-readable text.")
+def positions_close_auto(dry_run: bool, json_output: bool) -> None:
+    store = PositionsStore(POS_PATH)
+    open_positions = store.get_open_positions()
+    if not open_positions:
+        click.echo("No open positions found.")
+        return
+
+    provider = get_provider()
+    snapshot = load_snapshot()
+    now = datetime.now(timezone.utc)
+
+    items = _monitor_snapshot(open_positions, provider, snapshot, now)
+    closed: List[Dict[str, Any]] = []
+
+    for idx, pos in enumerate(open_positions):
+        decision = items[idx]["decision"]
+        metrics = items[idx]["metrics"]
+        if (decision.get("action") or "").lower() != "exit":
+            continue
+        updated = PaperPosition.model_validate(pos.model_dump())
+        updated.status = "closed"
+        updated.closed_at = now
+        updated.exit_mid = float(metrics.get("current_mid") or updated.entry_mid or 0.0)
+        updated.realized_pl_total = metrics.get("unrealized_pl_total")
+        updated.exit_reason = decision.get("reason") or updated.exit_reason or "auto"
+        if updated.max_profit_total is None and metrics.get("max_profit_total") is not None:
+            updated.max_profit_total = metrics.get("max_profit_total")
+        if updated.max_loss_total is None and metrics.get("max_loss_total") is not None:
+            updated.max_loss_total = metrics.get("max_loss_total")
+        closed.append(
+            {
+                "position_before": pos.model_dump(mode="json"),
+                "position_after": updated.model_dump(mode="json"),
+                "metrics": metrics,
+                "decision": decision,
+            }
+        )
+        if not dry_run:
+            store.update_position(updated)
+
+    if json_output:
+        click.echo(json.dumps(closed, indent=2, default=str))
+        return
+
+    if not closed:
+        click.echo("No positions met exit rules.")
+        return
+
+    click.echo("Closed positions:")
+    for item in closed:
+        after = item["position_after"]
+        metrics = item["metrics"]
+        click.echo(
+            f"- {after.get('id')} {after.get('symbol')} {after.get('strategy_id') or after.get('strategy')} "
+            f"exit_mid={metrics.get('current_mid')} pnl={metrics.get('unrealized_pl_total')} reason={item['decision'].get('reason')}"
+            + (" (dry-run)" if dry_run else "")
+        )
+
+
+@positions.command("close")
+@click.option("--id", "position_id", required=True, help="Position id/UUID to close.")
+@click.option("--reason", type=str, default=None, help="Optional reason to record on close.")
+@click.option("--dry-run", is_flag=True, help="Show close details without persisting.")
+@click.option("--json-output", is_flag=True, help="Emit JSON instead of human-readable text.")
+def positions_close(position_id: str, reason: Optional[str], dry_run: bool, json_output: bool) -> None:
+    store = PositionsStore(POS_PATH)
+    pos = store.get(position_id)
+    if pos is None:
+        raise click.ClickException(f"Position {position_id} not found.")
+
+    provider = get_provider()
+    snapshot = load_snapshot()
+    now = datetime.now(timezone.utc)
+
+    rules = load_exit_rules(pos.strategy_id or pos.strategy or "")
+    metrics = compute_position_metrics(
+        pos,
+        now=now,
+        provider=provider,
+        vol_snapshot=snapshot,
+        exit_rules=rules,
+    )
+    decision = evaluate_exit_rules(metrics, rules)
+
+    planned_exit_mid = metrics.current_mid
+    realized_pl = metrics.unrealized_pl_total
+
+    before_dump = pos.model_dump(mode="json")
+    if not dry_run:
+        pos.status = "closed"
+        pos.closed_at = now
+        pos.exit_mid = planned_exit_mid
+        pos.realized_pl_total = realized_pl
+        pos.exit_reason = reason or decision.reason or "manual"
+        if pos.max_profit_total is None and metrics.max_profit_total is not None:
+            pos.max_profit_total = metrics.max_profit_total
+        if pos.max_loss_total is None and metrics.max_loss_total is not None:
+            pos.max_loss_total = metrics.max_loss_total
+        store.update_position(pos)
+    after_dump = pos.model_dump(mode="json")
+
+    payload = {
+        "position_before": before_dump,
+        "position_after": after_dump,
+        "metrics": metrics.model_dump(mode="json"),
+        "decision": decision.model_dump(mode="json"),
+        "planned_exit_mid": planned_exit_mid,
+        "planned_realized_pl": realized_pl,
+        "dry_run": dry_run,
+    }
+    if json_output:
+        click.echo(json.dumps(payload, indent=2, default=str))
+    else:
+        pnl_label = f"{realized_pl:.2f}" if realized_pl is not None else "0.00"
+        click.echo(
+            f"Position {pos.id} {pos.symbol} {pos.strategy_id or pos.strategy} "
+            f"exit_mid={planned_exit_mid:.2f} "
+            f"pnl={pnl_label} "
+            f"reason={reason or decision.reason}"
+        )
 
 @positions.command("show")
 @click.option("--id", "position_id", required=True, help="Position id/UUID to show.")
