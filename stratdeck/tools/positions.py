@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 from uuid import uuid4
@@ -15,15 +15,42 @@ DEFAULT_POSITIONS_PATH = Path(".stratdeck/positions.json")
 POS_PATH: Path = DEFAULT_POSITIONS_PATH
 
 
-def _calc_dte(expiry: Optional[str]) -> Optional[int]:
+def _calc_dte(expiry: Optional[datetime | str]) -> Optional[int]:
     if not expiry:
         return None
     try:
-        d = datetime.fromisoformat(str(expiry)).date()
+        expiry_dt = expiry if isinstance(expiry, datetime) else datetime.fromisoformat(str(expiry))
     except Exception:
         return None
-    today = datetime.now(timezone.utc).date()
-    return max((d - today).days, 0)
+    if expiry_dt.tzinfo is None:
+        expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+    today = datetime.now(timezone.utc)
+    return max(int((expiry_dt - today).days), 0)
+
+
+def _parse_expiry(row: Dict[str, Any]) -> Optional[datetime | date]:
+    expiry: Any = (row or {}).get("expiry")
+    if expiry is None:
+        for leg in row.get("legs") or []:
+            leg_expiry = leg.get("expiry") if isinstance(leg, dict) else getattr(leg, "expiry", None)
+            if leg_expiry:
+                expiry = leg_expiry
+                break
+    provenance = row.get("provenance")
+    if expiry is None and isinstance(provenance, dict):
+        expiry = provenance.get("expiry")
+
+    if isinstance(expiry, datetime):
+        return expiry if expiry.tzinfo is not None else expiry.replace(tzinfo=timezone.utc)
+    if isinstance(expiry, date):
+        return datetime.combine(expiry, datetime.min.time(), tzinfo=timezone.utc)
+    if expiry is None:
+        return None
+    try:
+        expiry_dt = datetime.fromisoformat(str(expiry))
+    except Exception:
+        return None
+    return expiry_dt if expiry_dt.tzinfo is not None else expiry_dt.replace(tzinfo=timezone.utc)
 
 
 def _normalize_notes(notes: Any) -> Optional[str]:
@@ -116,6 +143,7 @@ class PaperPosition(BaseModel):
     max_loss_total: Optional[float] = None
     spread_width: Optional[float] = None
     dte: Optional[int] = None
+    expiry: Optional[datetime] = None
     opened_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: str = "open"
     closed_at: Optional[datetime] = None
@@ -255,6 +283,7 @@ def _position_from_plan(spread_plan: Dict[str, Any], qty: int, entry_mid_price: 
         qty=int(qty),
         entry_mid=entry_mid,
         spread_width=spread_width if spread_width not in ("", None) else None,
+        expiry=expiry if expiry not in ("", None) else None,
         dte=dte if dte not in ("", None) else None,
         notes=notes_val,
         provenance=spread_plan.get("provenance"),
@@ -272,10 +301,17 @@ def _legacy_dict(position: PaperPosition) -> Dict[str, Any]:
             "entry_mid_price": position.entry_mid,
             "width": position.spread_width,
             "qty": position.qty,
-            "dte": position.dte,
+            "expiry": position.expiry.isoformat() if isinstance(position.expiry, datetime) else position.expiry,
             "status": (position.status or "open").lower(),
         }
     )
+    expiry = _parse_expiry(data)  # this should give you a datetime or date
+    if expiry is not None:
+        # canonical integer DTE via legacy helper
+        expiry_str = expiry.strftime("%Y-%m-%d")
+        data["dte"] = _calc_dte(expiry_str)
+    else:
+        data["dte"] = None
     return data
 
 

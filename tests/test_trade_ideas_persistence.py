@@ -48,6 +48,8 @@ def test_trade_ideas_writes_last_file():
     assert ideas_file == ideas_stdout
     if ideas_stdout:
         sample = ideas_stdout[0]
+        assert "ivr" in sample
+        assert ideas_file[0].get("ivr") == sample.get("ivr")
         assert "strategy_id" in sample
         assert "universe_id" in sample
         assert "filters_passed" in sample

@@ -331,12 +331,12 @@ def positions(ctx: click.Context) -> None:
 def positions_list(include_all: bool, json_output: bool) -> None:
     store = PositionsStore(POS_PATH)
     pos_list = store.list_positions(status=None if include_all else "open")
+    if json_output:
+        payload = [p.model_dump(mode="json") for p in pos_list] if pos_list else []
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
     if not pos_list:
         click.echo("No positions found.")
-        return
-    if json_output:
-        payload = [p.model_dump(mode="json") for p in pos_list]
-        click.echo(json.dumps(payload, indent=2, default=str))
         return
 
     click.echo("ID                                   Symbol  Strategy                       Qty  Status  Entry mid")
@@ -384,7 +384,10 @@ def positions_monitor(json_output: bool) -> None:
     store = PositionsStore(POS_PATH)
     open_positions = store.get_open_positions()
     if not open_positions:
-        click.echo("No open positions found.")
+        if json_output:
+            click.echo("[]")
+        else:
+            click.echo("No open positions found.")
         return
 
     provider = get_provider()
@@ -431,7 +434,10 @@ def positions_close_auto(dry_run: bool, json_output: bool) -> None:
     store = PositionsStore(POS_PATH)
     open_positions = store.get_open_positions()
     if not open_positions:
-        click.echo("No open positions found.")
+        if json_output:
+            click.echo("[]")
+        else:
+            click.echo("No open positions found.")
         return
 
     provider = get_provider()
