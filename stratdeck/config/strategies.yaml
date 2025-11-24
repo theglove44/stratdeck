@@ -13,13 +13,11 @@ universes:
       type: static
       tickers: [SPX, XSP]
 
-  equity_core:
-    description: "Liquid large-cap equities & ETFs from a Tastytrade watchlist"
-    product_type: equity
+  tasty_watchlist_chris_historical_trades:
+    product_type: any
     source:
       type: tasty_watchlist
-      watchlist_name: "Equity Core"
-      max_symbols: 50
+      watchlist_name: "Chris Historical Trades"
 
   earnings_plays:
     description: "Short-term earnings strategies from a local watchlist file"
@@ -46,7 +44,7 @@ strategies:
   - name: short_put_spread_index_45d
     label: "Index Short Put Spread ~45 DTE"
     enabled: true
-    applies_to_universes: [index_core]
+    applies_to_universes: [index_core, tasty_watchlist_chris_historical_trades]
     product_type: index
     order_side: sell
     option_type: put
@@ -75,7 +73,7 @@ strategies:
   - name: short_put_spread_equity_45d
     label: "Equity Short Put Spread ~45 DTE"
     enabled: true
-    applies_to_universes: [equity_core]
+    applies_to_universes: [tasty_watchlist_chris_historical_trades]
     product_type: equity
     order_side: sell
     option_type: put
@@ -113,7 +111,7 @@ strategies:
   - name: iron_condor_index_30d
     label: "Index Iron Condor ~30 DTE"
     enabled: true
-    applies_to_universes: [index_core, earnings_plays]
+    applies_to_universes: [tasty_watchlist_chris_historical_trades]
     product_type: index
     order_side: sell
     option_type: both   # short call spread + short put spread

@@ -49,12 +49,47 @@ def vertical_credit(vert: Dict) -> float:
     """Legacy alias expected by chain_pricing_adapter."""
     return credit_for_vertical(vert)
 
-def pop_estimate(vert: Dict, target_delta: float) -> float:
+def pop_estimate(vert: Dict, target_delta: float | None = None) -> float:
     """
-    POP heuristic = 1 - short_delta with a tiny cushion if width is generous.
+    POP heuristic.
+
+    Primary intent:
+      - Use the actual short-leg delta from the chain if we have it.
+      - Otherwise fall back to the strategy-configured target delta.
+      - As a last resort, assume a 0.20 delta.
+
+    Then:
+      POP ≈ 1 - short_delta, with a small bump for wider spreads.
     """
-    sd = float(vert["short"]["delta"])
-    base = max(0.50, min(0.95, 1.0 - sd))
-    width = float(vert["width"])
-    bonus = min(width * 0.002, 0.02)  # small bump for wider spreads, up to +2%
+    # 1) Try the chain delta first.
+    sd_raw = vert.get("short", {}).get("delta", 0.0)
+    sd: float | None
+    try:
+        sd = float(sd_raw)
+    except Exception:
+        sd = None
+
+    # 2) If chain delta is missing/zero-ish, use target_delta if provided.
+    if sd is None or sd <= 0.0:
+        if target_delta is not None:
+            try:
+                sd = abs(float(target_delta))
+            except Exception:
+                sd = None
+
+    # 3) Absolute safety net.
+    if sd is None or sd <= 0.0:
+        sd = 0.20
+
+    # Core heuristic: 1 - delta, clipped into [0.50, 0.95].
+    base = max(0.50, min(0.95, 1.0 - abs(sd)))
+
+    # Small bump for wider spreads, up to +2%.
+    width_raw = vert.get("width", 0.0)
+    try:
+        width = float(width_raw)
+    except Exception:
+        width = 0.0
+    bonus = min(width * 0.002, 0.02)
+
     return round(base + bonus, 2)

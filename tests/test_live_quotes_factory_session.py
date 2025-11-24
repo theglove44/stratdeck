@@ -28,6 +28,7 @@ def test_make_tasty_streaming_session_from_env(monkeypatch):
 def test_build_live_quotes_uses_streaming_helper(monkeypatch):
     sentinel_session = object()
     created = {}
+    sentinel_symbols = ["SPX", "XSP", "AAPL"]
 
     class DummyService:
         def __init__(self, session, symbols):
@@ -43,6 +44,7 @@ def test_build_live_quotes_uses_streaming_helper(monkeypatch):
     monkeypatch.setattr(
         factory, "make_tasty_streaming_session_from_env", lambda: sentinel_session
     )
+    monkeypatch.setattr(factory, "_resolve_live_symbols", lambda: sentinel_symbols)
     monkeypatch.setattr(factory.atexit, "register", lambda func: None)
 
     factory._live_quotes_instance = None
@@ -50,7 +52,7 @@ def test_build_live_quotes_uses_streaming_helper(monkeypatch):
 
     assert isinstance(service, DummyService)
     assert created["session"] is sentinel_session
-    assert created["symbols"] == ["SPX", "XSP"]
+    assert created["symbols"] == sentinel_symbols
     assert created["started"] is True
     assert factory._live_quotes_instance is service
 

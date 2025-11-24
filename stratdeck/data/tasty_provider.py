@@ -9,8 +9,47 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+
+def make_tasty_session_from_env() -> requests.Session:
+    """Build and authenticate a requests.Session using env credentials.
+
+    Shared helper for REST-only flows that need a logged-in session
+    (e.g. watchlists) without duplicating login logic across modules.
+    """
+    username = os.getenv("TASTY_USER") or os.getenv("TT_USERNAME")
+    password = os.getenv("TASTY_PASS") or os.getenv("TT_PASSWORD")
+    if not username or not password:
+        raise RuntimeError(
+            "Set TASTY_USER/TASTY_PASS (or TT_USERNAME/TT_PASSWORD) to use live mode"
+        )
+
+    session = requests.Session()
+    session.headers.update(
+        {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "StratDeck/0.3",
+        }
+    )
+
+    resp = session.post(
+        f"{API_BASE}/sessions",
+        json={"login": username, "password": password.strip()},
+        timeout=30,
+    )
+    if resp.status_code != 201:
+        raise RuntimeError(f"Tastytrade login failed: {resp.text}")
+    token = resp.json()["data"].get("session-token")
+    if not token:
+        raise RuntimeError("Tastytrade login response missing session-token")
+    session.headers["Authorization"] = token
+    return session
+
 from .live_quotes import LiveMarketDataService, QuoteSnapshot
 from .provider import IDataProvider
+
+API_BASE = os.getenv("TASTY_API_URL", "https://api.tastyworks.com")
+
 
 try:  # suppress noisy TLS warning on macOS + Python 3.9
     import warnings
@@ -27,7 +66,7 @@ log = logging.getLogger(__name__)
 class TastyProvider(IDataProvider):
     """Minimal REST client for the tastytrade API."""
 
-    API_BASE = os.getenv("TASTY_API_URL", "https://api.tastyworks.com")
+    API_BASE = API_BASE
     INDEX_SYMBOLS = {"SPX", "RUT", "NDX", "VIX", "XSP"}
     MAX_OPTION_QUOTES = 75  # API limit is 100 per request
 
@@ -40,15 +79,9 @@ class TastyProvider(IDataProvider):
             )
         self.password = self.password.strip()
         self.account_id = os.getenv("TASTY_ACCOUNT_ID")
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "StratDeck/0.3",
-            }
-        )
-        self._login()
+        self.session = make_tasty_session_from_env()
+        self._session_token = self.session.headers.get("Authorization")
+        self._session_created = time.time()
         if not self.account_id:
             self.account_id = self._fetch_default_account()
         self._metrics_cache: Dict[str, Dict[str, Any]] = {}
