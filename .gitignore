@@ -17,6 +17,7 @@ stratdeck/data/positions.csv
 /data/
 packages/mcp-server/stratdeck.db*
 .stratdeck/
+*.json
 
 # OS files
 .DS_Store
