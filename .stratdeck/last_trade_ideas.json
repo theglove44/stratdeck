@@ -6,29 +6,29 @@
     "strategy": "short_put_spread",
     "direction": "bullish",
     "vol_context": "expansion_likely",
-    "rationale": "XSP: slightly_bullish with downside levels providing support \u2013 bullish short put spread structured below key support.",
+    "rationale": "XSP: neutral with downside levels providing support \u2013 bullish short put spread structured below key support.",
     "legs": [
       {
         "side": "short",
         "type": "put",
-        "strike": 100.67624939216498,
+        "strike": 104.1849253674341,
         "expiry": "45DTE",
         "quantity": 1
       },
       {
         "side": "long",
         "type": "put",
-        "strike": 95.67624939216498,
+        "strike": 99.1849253674341,
         "expiry": "45DTE",
         "quantity": 1
       }
     ],
-    "underlying_price_hint": 101.2348850893999,
+    "underlying_price_hint": 107.7780672148472,
     "dte_target": 45,
     "spread_width": 5.0,
     "target_delta": 0.2,
     "notes": [
-      "Trend regime: choppy_trend, TA bias: 0.13, vol regime: compression.",
+      "Trend regime: uptrend, TA bias: -0.01, vol regime: compression.",
       "Volatility context (for options): expansion_likely.",
       "[provenance] template=short_put_spread_index_45d universe=index_core"
     ],
@@ -57,24 +57,24 @@
       {
         "side": "short",
         "type": "put",
-        "strike": 98.87975835456822,
+        "strike": 100.47798744324827,
         "expiry": "45DTE",
         "quantity": 1
       },
       {
         "side": "long",
         "type": "put",
-        "strike": 93.87975835456822,
+        "strike": 95.47798744324827,
         "expiry": "45DTE",
         "quantity": 1
       }
     ],
-    "underlying_price_hint": 100.45135778801176,
+    "underlying_price_hint": 100.76271371340576,
     "dte_target": 45,
     "spread_width": 5.0,
     "target_delta": 0.2,
     "notes": [
-      "Trend regime: range, TA bias: 0.11, vol regime: compression.",
+      "Trend regime: choppy_trend, TA bias: 0.27, vol regime: compression.",
       "Volatility context (for options): expansion_likely.",
       "[provenance] template=short_put_spread_index_45d universe=index_core"
     ],

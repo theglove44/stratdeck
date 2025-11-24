@@ -77,11 +77,11 @@ class LiveMarketDataService:
     def __init__(
         self,
         session: Any,
-        symbols: Sequence[str],
+        symbols: Optional[Sequence[str]] = None,
         freshness_ttl: timedelta = timedelta(seconds=3),
         reconnect_delay: float = 5.0,
     ) -> None:
-        self.session = session
+        self._session = session
         self.freshness_ttl = freshness_ttl
         self.reconnect_delay = reconnect_delay
         self._stop_event = threading.Event()
@@ -89,15 +89,17 @@ class LiveMarketDataService:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.RLock()
         self._quotes: Dict[str, QuoteSnapshot] = {}
-        self._symbols: Set[str] = {s.upper() for s in symbols}
+        self._symbols: Set[str] = {s.upper() for s in (symbols or [])}
         self._has_seen_quote = False
+        self._started = False
 
     # ------------------ lifecycle ------------------
 
     def start(self) -> None:
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            if self._started:
                 return
+            self._started = True
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run_loop, name="LiveMarketDataService", daemon=True
@@ -121,6 +123,7 @@ class LiveMarketDataService:
         # 3) wait for thread to finish
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5.0)
+        self._started = False
         log.info("LiveMarketDataService stopped")
 
     def __enter__(self) -> "LiveMarketDataService":
@@ -133,12 +136,12 @@ class LiveMarketDataService:
     # ------------------ public helpers ------------------
 
     def ensure_symbols(self, symbols: Iterable[str]) -> None:
+        new = {sym.upper() for sym in symbols} - self._symbols
+        if not new:
+            return
         with self._lock:
-            for sym in symbols:
-                self._symbols.add(sym.upper())
-        # We intentionally avoid spinning up additional streamer sessions here.
-        # The service maintains a single connection; new symbols are picked up
-        # on the next reconnect cycle.
+            self._symbols |= new
+        # TODO: if already streaming, subscribe any new symbols on the existing connection
 
     def get_snapshot(self, symbol: str) -> Optional[QuoteSnapshot]:
         sym = symbol.upper()
@@ -214,7 +217,7 @@ class LiveMarketDataService:
             log.warning("LiveMarketDataService no symbols configured; sleeping")
             await asyncio.sleep(1.0)
             return
-        if self.session is None:
+        if self._session is None:
             log.warning("LiveMarketDataService has no session; stopping stream loop")
             self._stop_event.set()
             return
@@ -227,7 +230,7 @@ class LiveMarketDataService:
             self._stop_event.set()
             return
 
-        async with DXLinkStreamer(self.session) as streamer:
+        async with DXLinkStreamer(self._session) as streamer:
             await streamer.subscribe(Quote, sorted(self._symbols))
             log.info("LiveMarketDataService subscribed symbols=%s", sorted(self._symbols))
             while not self._stop_event.is_set():

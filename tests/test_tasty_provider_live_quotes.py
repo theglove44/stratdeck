@@ -86,6 +86,40 @@ def test_wait_for_snapshot_used_before_rest(monkeypatch):
     assert live.calls == ["get:SPY", "wait:SPY"]
 
 
+def test_get_quote_prefers_live_snapshot_xsp(monkeypatch):
+    snapshot = QuoteSnapshot(
+        symbol="XSP",
+        bid=Decimal("5"),
+        ask=Decimal("6"),
+        mid=Decimal("5.5"),
+        asof=datetime.now(timezone.utc),
+    )
+
+    class DummyLive:
+        def __init__(self):
+            self.calls = []
+
+        def get_snapshot(self, symbol):
+            self.calls.append(f"get:{symbol}")
+            return snapshot
+
+        def wait_for_snapshot(self, symbol, timeout=0.5):
+            self.calls.append(f"wait:{symbol}")
+            return snapshot
+
+    live = DummyLive()
+    provider = _make_provider(monkeypatch, live)
+    monkeypatch.setattr(
+        provider, "_get_quote_rest", lambda sym: (_ for _ in ()).throw(AssertionError("REST used"))
+    )
+
+    quote = provider.get_quote("xsp")
+
+    assert quote["source"] == "dxlink"
+    assert quote["mid"] == pytest.approx(5.5)
+    assert live.calls == ["get:XSP"]
+
+
 def test_rest_fallback_is_throttled(monkeypatch):
     class EmptyLive:
         def get_snapshot(self, symbol):
