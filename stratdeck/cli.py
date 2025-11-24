@@ -38,6 +38,9 @@ from .tools.ideas import load_last_ideas, persist_last_ideas
 from .tools.positions import POS_PATH, PaperPosition, PositionsStore
 from .tools.position_monitor import compute_position_metrics, evaluate_exit_rules, load_exit_rules
 from .tools.vol import load_snapshot
+from .data.tasty_watchlists import get_watchlist_symbols
+
+log = logging.getLogger(__name__)
 
 LAST_TRADE_IDEAS_PATH = Path(".stratdeck/last_trade_ideas.json")
 LAST_POSITION_MONITORING_PATH = Path(".stratdeck/last_position_monitoring.json")
@@ -84,17 +87,15 @@ def _resolve_tasty_watchlist(name: str, max_symbols: Optional[int]) -> List[str]
     Once ready, replace the body with a real call using your Tasty SDK,
     e.g. tasty.get_watchlist(name).
     """
-    # TODO: wire to real tastywatchlist helper.
-    # Example skeleton:
-    #
-    # from stratdeck.tools.tasty import get_watchlist_symbols
-    # symbols = get_watchlist_symbols(name)
-    # if max_symbols is not None:
-    #     symbols = symbols[:max_symbols]
-    # return symbols
-    #
-    # For now, to keep things safe and testable, just:
-    return []
+    try:
+        symbols = get_watchlist_symbols(name)
+    except Exception as exc:
+        log.warning("Failed to resolve tasty watchlist %s: %r", name, exc)
+        return []
+
+    if max_symbols is not None:
+        symbols = symbols[:max_symbols]
+    return symbols
 
 
 def _build_trade_ideas_for_symbols(

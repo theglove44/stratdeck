@@ -232,9 +232,32 @@ class StrategyConfig(BaseModel):
         Here we convert that dict into UniverseConfig objects
         while injecting the key as the 'name' field.
         """
-        if isinstance(v, dict):
-            return {name: {"name": name, **cfg} for name, cfg in v.items()}
-        return v
+        if not isinstance(v, dict):
+            return v
+
+        new_v: Dict[str, object] = {}
+
+        for name, cfg in v.items():
+            # Case 1: already a UniverseConfig instance (e.g. tests constructing
+            # StrategyConfig(universes=...)).
+            if isinstance(cfg, UniverseConfig):
+                # Ensure the embedded name matches the dict key.
+                if cfg.name != name:
+                    cfg = cfg.model_copy(update={"name": name})
+                new_v[name] = cfg
+                continue
+
+            # Case 2: raw dict from YAML.
+            if isinstance(cfg, dict):
+                data = dict(cfg)
+                data.setdefault("name", name)
+                new_v[name] = data
+                continue
+
+            # Fallback: leave as-is (let Pydantic complain if it can't coerce).
+            new_v[name] = cfg
+
+        return new_v
 
 
 # ---------------------------------------------------------------------------

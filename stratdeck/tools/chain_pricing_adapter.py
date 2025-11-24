@@ -207,6 +207,26 @@ class ChainPricingAdapter:
                 return (bid_f + ask_f) / 2.0
             return None
 
+        def _extract_delta(q: Dict[str, Any]) -> float:
+            """
+            Best-effort extraction of short-leg delta from a chain row.
+
+            Handles:
+              - top-level 'delta'
+              - nested 'greeks': {'delta': ...}
+            """
+            if not isinstance(q, dict):
+                return 0.0
+            val = q.get("delta")
+            if val is None:
+                greeks = q.get("greeks")
+                if isinstance(greeks, dict):
+                    val = greeks.get("delta")
+            try:
+                return abs(float(val))
+            except Exception:
+                return 0.0
+
         short_q = _nearest_quote(short_strike)
         long_q = _nearest_quote(long_strike)
         if short_q is None or long_q is None:
@@ -217,11 +237,13 @@ class ChainPricingAdapter:
         if short_mid is None or long_mid is None:
             return None
 
+        short_delta = _extract_delta(short_q)
+
         vert = {
             "short": {
                 "mid": float(short_mid),
                 # delta is optional; used in the POP heuristic if present.
-                "delta": float(short_q.get("delta", 0.0) or 0.0),
+                "delta": short_delta,
             },
             "long": {
                 "mid": float(long_mid),
@@ -251,13 +273,10 @@ class ChainPricingAdapter:
         # POP: delegate to pricing.pop_estimate, passing either:
         # - strategy-configured target delta (if provided by caller), or
         # - the chain delta on the short leg, or
-        # - default 0.20.
+        # - default 0.20 (handled inside pop_estimate).
         td = target_delta_hint
-        if td is None:
-            try:
-                td = float(short_q.get("delta"))
-            except Exception:
-                td = 0.20
+        if td is None and short_delta > 0.0:
+            td = short_delta
 
         try:
             pop = float(pop_estimate(vert, td))
