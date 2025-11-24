@@ -30,6 +30,8 @@ def _stop_live_quotes() -> None:
 
 def _build_live_quotes() -> Optional[LiveMarketDataService]:
     global _live_quotes_instance
+    if _live_quotes_instance is not None:
+        return _live_quotes_instance
     session = make_tasty_streaming_session_from_env()
     if session is None:
         return None

@@ -53,6 +53,13 @@ class TastyProvider(IDataProvider):
             self.account_id = self._fetch_default_account()
         self._metrics_cache: Dict[str, Dict[str, Any]] = {}
         self._live_quotes = live_quotes
+        self._quote_cache: Dict[str, Dict[str, Any]] = {}
+        self._quote_cache_ts: Dict[str, float] = {}
+        try:
+            self._quote_cache_ttl = float(os.getenv("STRATDECK_QUOTE_CACHE_TTL", "30"))
+        except ValueError:
+            self._quote_cache_ttl = 30.0
+        self._now = time.monotonic
 
     # ------------------------- public interface -------------------------
 
@@ -61,12 +68,40 @@ class TastyProvider(IDataProvider):
         live_quote = self._quote_from_snapshot(sym)
         if live_quote is not None:
             return live_quote
-        return self._get_quote_rest(sym)
+        awaited = self._wait_for_snapshot(sym)
+        if awaited is not None:
+            return awaited
+        quote = self._get_quote_rest_throttled(sym)
+        if quote is not None:
+            return quote
+        return {
+            "symbol": sym,
+            "bid": None,
+            "ask": None,
+            "last": None,
+            "mark": None,
+            "mid": None,
+            "source": "unavailable",
+        }
 
     def _quote_from_snapshot(self, symbol: str) -> Optional[Dict[str, Any]]:
         if not self._live_quotes:
             return None
         snapshot: Optional[QuoteSnapshot] = self._live_quotes.get_snapshot(symbol)
+        return self._snapshot_to_quote(symbol, snapshot)
+
+    def _wait_for_snapshot(self, symbol: str, timeout: float = 0.5) -> Optional[Dict[str, Any]]:
+        if not self._live_quotes:
+            return None
+        try:
+            snapshot = self._live_quotes.wait_for_snapshot(symbol, timeout=timeout)
+        except Exception:
+            snapshot = None
+        return self._snapshot_to_quote(symbol, snapshot)
+
+    def _snapshot_to_quote(
+        self, symbol: str, snapshot: Optional[QuoteSnapshot]
+    ) -> Optional[Dict[str, Any]]:
         if snapshot is None:
             return None
 
@@ -109,7 +144,25 @@ class TastyProvider(IDataProvider):
             "last": last if last is not None else (mid if mid is not None else 0.0),
             "mark": mid,
             "mid": mid,
+            "source": "rest",
         }
+
+    def _get_quote_rest_throttled(self, symbol: str) -> Optional[Dict[str, Any]]:
+        now = self._now()
+        cached_ts = self._quote_cache_ts.get(symbol)
+        if cached_ts is not None and (now - cached_ts) < self._quote_cache_ttl:
+            cached = self._quote_cache.get(symbol)
+            if cached is not None:
+                return cached
+
+        quote = self._get_quote_rest(symbol)
+        if quote is None:
+            return None
+
+        quote["source"] = "rest-fallback" if self._live_quotes else "rest"
+        self._quote_cache[symbol] = quote
+        self._quote_cache_ts[symbol] = now
+        return quote
 
     def get_option_chain(self, symbol: str, expiry: Optional[str] = None) -> Dict[str, Any]:
         chain = self._get_json(f"/option-chains/{symbol}/nested")

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -135,6 +136,9 @@ class LiveMarketDataService:
         with self._lock:
             for sym in symbols:
                 self._symbols.add(sym.upper())
+        # We intentionally avoid spinning up additional streamer sessions here.
+        # The service maintains a single connection; new symbols are picked up
+        # on the next reconnect cycle.
 
     def get_snapshot(self, symbol: str) -> Optional[QuoteSnapshot]:
         sym = symbol.upper()
@@ -149,6 +153,21 @@ class LiveMarketDataService:
     def get_mid_price(self, symbol: str) -> Optional[Decimal]:
         snap = self.get_snapshot(symbol)
         return snap.mid if snap else None
+
+    def wait_for_snapshot(
+        self, symbol: str, timeout: float = 0.5, poll_interval: float = 0.05
+    ) -> Optional[QuoteSnapshot]:
+        """Block briefly waiting for a fresh snapshot to arrive."""
+        deadline = time.monotonic() + timeout
+        snap = self.get_snapshot(symbol)
+        if snap:
+            return snap
+        while time.monotonic() < deadline and not self._stop_event.is_set():
+            time.sleep(poll_interval)
+            snap = self.get_snapshot(symbol)
+            if snap:
+                return snap
+        return self.get_snapshot(symbol)
 
     def is_healthy(self) -> bool:
         thread_alive = self._thread is not None and self._thread.is_alive()

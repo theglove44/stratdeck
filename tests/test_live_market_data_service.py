@@ -49,3 +49,15 @@ def test_stale_snapshot_returns_none():
     # Force staleness and ensure get_snapshot respects TTL
     snap.asof = datetime.now(timezone.utc) - timedelta(seconds=10)
     assert svc.get_snapshot("SPX") is None
+
+
+def test_wait_for_snapshot_returns_when_available():
+    svc = LiveMarketDataService(session=None, symbols=["SPX"])
+    assert svc.wait_for_snapshot("SPX", timeout=0.05) is None
+
+    quote = SimpleNamespace(event_symbol="SPX", bid_price=100.0, ask_price=101.0)
+    svc._handle_quote_event(quote)
+
+    snap = svc.wait_for_snapshot("SPX", timeout=0.05)
+    assert snap is not None
+    assert snap.symbol == "SPX"
