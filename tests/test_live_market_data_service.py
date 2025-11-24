@@ -49,3 +49,31 @@ def test_stale_snapshot_returns_none():
     # Force staleness and ensure get_snapshot respects TTL
     snap.asof = datetime.now(timezone.utc) - timedelta(seconds=10)
     assert svc.get_snapshot("SPX") is None
+
+
+def test_wait_for_snapshot_returns_when_available():
+    svc = LiveMarketDataService(session=None, symbols=["SPX"])
+    assert svc.wait_for_snapshot("SPX", timeout=0.05) is None
+
+    quote = SimpleNamespace(event_symbol="SPX", bid_price=100.0, ask_price=101.0)
+    svc._handle_quote_event(quote)
+
+    snap = svc.wait_for_snapshot("SPX", timeout=0.05)
+    assert snap is not None
+    assert snap.symbol == "SPX"
+
+
+def test_multiple_symbols_are_tracked():
+    svc = LiveMarketDataService(session=None, symbols=["SPX"])
+
+    # ensure_symbols should accept new tickers and allow snapshots to be cached
+    svc.ensure_symbols(["XSP"])
+
+    svc._handle_quote_event(SimpleNamespace(event_symbol="SPX", bid_price=100.0, ask_price=102.0))
+    svc._handle_quote_event(SimpleNamespace(event_symbol="XSP", bid_price=10.0, ask_price=12.0))
+
+    spx = svc.get_snapshot("SPX")
+    xsp = svc.get_snapshot("XSP")
+
+    assert spx is not None and spx.mid == Decimal("101.0")
+    assert xsp is not None and xsp.mid == Decimal("11.0")
