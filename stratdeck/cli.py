@@ -40,6 +40,7 @@ from .tools.position_monitor import compute_position_metrics, evaluate_exit_rule
 from .tools.vol import load_snapshot
 from .data.tasty_watchlists import get_watchlist_symbols
 from .tools.build_iv_snapshot import IV_SNAPSHOT_PATH, build_iv_snapshot
+from .data.market_metrics import DEFAULT_CHUNK_SIZE, fetch_market_metrics_raw
 
 log = logging.getLogger(__name__)
 
@@ -677,6 +678,29 @@ def close(position_id: int, exit_credit: float, note: str):
         },
     )
     click.echo(f"Position {position_id} closed for P/L ${pnl:.2f}")
+
+
+@cli.command("dump-market-metrics")
+@click.option(
+    "--symbols",
+    required=True,
+    help="Comma-separated symbols to query (e.g. SPX,AMD,GLD).",
+)
+@click.option(
+    "--chunk-size",
+    default=DEFAULT_CHUNK_SIZE,
+    show_default=True,
+    help="Batch size for the market-metrics request.",
+)
+def dump_market_metrics(symbols: str, chunk_size: int):
+    """Dump raw /market-metrics payload for IVR debugging."""
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise click.UsageError("Provide at least one symbol via --symbols")
+
+    payload = fetch_market_metrics_raw(symbol_list, chunk_size=chunk_size)
+    click.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 @cli.command("refresh-ivr-snapshot")

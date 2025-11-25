@@ -4,6 +4,7 @@ import pytest
 
 from stratdeck.data.market_metrics import (
     DEFAULT_CHUNK_SIZE,
+    fetch_market_metrics_raw,
     _extract_ivr_from_item,
     _items_from_response,
     fetch_iv_rank_for_symbols,
@@ -34,17 +35,48 @@ class FakeSession:
         return self._responses.pop(0)
 
 
-def test_extract_prefers_tw_field_and_clamps():
-    item = {"symbol": "SPX", "tw-implied-volatility-index-rank": 0.42, "implied-volatility-index-rank": 0.99}
-    assert _extract_ivr_from_item(item) == 0.42
+def test_extract_ivr_prefers_implied_volatility_index_rank():
+    item = {
+        "symbol": "XSP",
+        "implied-volatility-index-rank": "0.268717949",
+        "tw-implied-volatility-index-rank": 0.40,
+    }
+    ivr = _extract_ivr_from_item(item)
+    assert ivr == pytest.approx(0.268717949)
 
 
-def test_extract_falls_back_and_scales_percentages():
-    assert _extract_ivr_from_item({"implied-volatility-index-rank": 0.25}) == 0.25
-    assert _extract_ivr_from_item({"implied-volatility-index-rank": 42}) == pytest.approx(0.42)
-    assert _extract_ivr_from_item({"tw-implied-volatility-index-rank": 142}) is None
-    assert _extract_ivr_from_item({"implied-volatility-index-rank": -1}) is None
-    assert _extract_ivr_from_item({"implied-volatility-index-rank": "bad"}) is None
+def test_extract_ivr_handles_string_fraction():
+    item = {
+        "implied-volatility-index-rank": "0.5",
+    }
+    ivr = _extract_ivr_from_item(item)
+    assert ivr == pytest.approx(0.5)
+
+
+def test_extract_ivr_falls_back_when_canonical_missing():
+    item = {
+        "tw-implied-volatility-index-rank": 0.32,
+    }
+    ivr = _extract_ivr_from_item(item)
+    assert ivr == pytest.approx(0.32)
+
+
+def test_extract_ivr_scales_percent_values():
+    item = {
+        "implied-volatility-index-rank": 26.8717949,
+    }
+    ivr = _extract_ivr_from_item(item)
+    assert ivr == pytest.approx(0.268717949, rel=1e-6)
+
+
+def test_extract_ivr_clamps_out_of_range():
+    assert _extract_ivr_from_item({"implied-volatility-index-rank": 200}) == 1.0
+    assert _extract_ivr_from_item({"implied-volatility-index-rank": -10}) == 0.0
+
+
+def test_extract_falls_back_when_canonical_missing_percent():
+    item = {"symbol": "GLD", "implied-volatility-index-rank": 88.2}
+    assert _extract_ivr_from_item(item) == pytest.approx(0.882)
 
 
 def test_items_from_response_handles_envelopes():
@@ -102,3 +134,33 @@ def test_fetch_iv_rank_for_symbols_chunks_and_skips_failures():
     assert session.calls[1]["params"] == {"symbols": "IWM,MSFT"}
     assert session.calls[2]["params"] == {"symbols": "QQQ,SPX"}
     assert session.calls[3]["params"] == {"symbols": "QQQ,SPX"}
+
+
+def test_fetch_market_metrics_raw_returns_items():
+    responses = [
+        FakeResponse(
+            {
+                "data": {
+                    "items": [
+                        {"symbol": "SPX", "tw-implied-volatility-index-rank": 11},
+                        {"symbol": "AAPL", "implied-volatility-index-rank": 9.9},
+                    ]
+                }
+            }
+        )
+    ]
+    session = FakeSession(responses)
+
+    raw = fetch_market_metrics_raw(["spx", "AAPL"], session=session, chunk_size=DEFAULT_CHUNK_SIZE)
+
+    assert raw == {
+        "data": {
+            "items": [
+                {"symbol": "SPX", "tw-implied-volatility-index-rank": 11},
+                {"symbol": "AAPL", "implied-volatility-index-rank": 9.9},
+            ]
+        }
+    }
+    assert session.calls
+    assert session.calls[0]["params"] == {"symbols": "AAPL,SPX"}
+    assert session.calls[0]["url"].endswith("/market-metrics")
