@@ -55,7 +55,7 @@ def attach_ivr_to_scan_rows(
 
     - rows: iterable of scan row dict-like objects. Must contain at least one of
       the keys given in symbol_keys (defaults to ['data_symbol', 'symbol']).
-    - iv_snapshot: mapping like { 'SPX': {'ivr': 32.1, ...}, ... }
+    - iv_snapshot: mapping like { 'SPX': {'ivr': 0.32, ...}, ... } (ivr 0–1)
     - symbol_keys: priority list of keys to use to look up the symbol in each row.
 
     This is the right place for the IVR wiring (step 2.2): call this once in the

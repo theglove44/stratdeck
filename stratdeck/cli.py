@@ -39,6 +39,7 @@ from .tools.positions import POS_PATH, PaperPosition, PositionsStore
 from .tools.position_monitor import compute_position_metrics, evaluate_exit_rules, load_exit_rules
 from .tools.vol import load_snapshot
 from .data.tasty_watchlists import get_watchlist_symbols
+from .tools.build_iv_snapshot import build_iv_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -677,6 +678,13 @@ def close(position_id: int, exit_credit: float, note: str):
         },
     )
     click.echo(f"Position {position_id} closed for P/L ${pnl:.2f}")
+
+
+@cli.command("refresh-ivr-snapshot")
+def refresh_ivr_snapshot():
+    """Refresh IV Rank snapshot via Tasty market-metrics for the live universe."""
+    snapshot = build_iv_snapshot()
+    click.echo(f"Refreshed IV snapshot for {len(snapshot)} symbols")
 
 
 @cli.command()
