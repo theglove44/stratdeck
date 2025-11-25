@@ -39,7 +39,7 @@ from .tools.positions import POS_PATH, PaperPosition, PositionsStore
 from .tools.position_monitor import compute_position_metrics, evaluate_exit_rules, load_exit_rules
 from .tools.vol import load_snapshot
 from .data.tasty_watchlists import get_watchlist_symbols
-from .tools.build_iv_snapshot import build_iv_snapshot
+from .tools.build_iv_snapshot import IV_SNAPSHOT_PATH, build_iv_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -171,14 +171,13 @@ def _build_trade_ideas_for_tasks(
         click.echo("Chartist did not produce any TA-enriched rows.", err=True)
         return []
 
-    iv_snapshot_path = Path("iv_snapshot.json")
-    if iv_snapshot_path.exists():
-        try:
-            iv_snapshot = json.loads(iv_snapshot_path.read_text())
-        except Exception as exc:
-            click.echo(f"[warn] Failed to load iv_snapshot.json: {exc}", err=True)
-            iv_snapshot = {}
-    else:
+    try:
+        iv_snapshot = load_snapshot(str(IV_SNAPSHOT_PATH))
+    except Exception as exc:
+        click.echo(
+            f"[warn] Failed to load IV snapshot at {IV_SNAPSHOT_PATH}: {exc}",
+            err=True,
+        )
         iv_snapshot = {}
 
     scan_rows = attach_ivr_to_scan_rows(enriched, iv_snapshot)

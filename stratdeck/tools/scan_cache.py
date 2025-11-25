@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numbers
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -46,7 +47,7 @@ def load_last_scan() -> ScanCache:
 
 def attach_ivr_to_scan_rows(
     rows: Iterable[Mapping[str, Any]],
-    iv_snapshot: Mapping[str, Mapping[str, Any]],
+    iv_snapshot: Mapping[str, Any],
     symbol_keys: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -78,7 +79,13 @@ def attach_ivr_to_scan_rows(
 
         if symbol is not None:
             vol_info = iv_snapshot.get(symbol, {})
-            ivr = vol_info.get("ivr")
+            if isinstance(vol_info, Mapping):
+                ivr = vol_info.get("ivr")
+            elif isinstance(vol_info, numbers.Number):
+                ivr = vol_info
+            else:
+                ivr = None
+
             if ivr is not None:
                 base["ivr"] = ivr
 
