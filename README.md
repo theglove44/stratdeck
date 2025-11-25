@@ -69,6 +69,25 @@ The Chartist prompts in `stratdeck/conf/prompts/chartist_system.md` and `chartis
 - Order preview/place endpoints are still stubbed; `--confirm` remains a paper-only simulation.
 - macOS + Python 3.9 ships with LibreSSL, so urllib3 emits a warning (“supports OpenSSL 1.1.1+”). It’s harmless and will disappear once the project moves to a newer Python build.
 
+### IV Rank (IVR)
+
+StratDeck uses Tastytrade's `/market-metrics` endpoint to populate an IV Rank snapshot for the live trading universe.
+
+- Source field: `implied-volatility-index-rank` from `/market-metrics` (this is the same value that backs the Tasty watchlist “IV Rank” column).
+- StratDeck normalises this to a 0–1 float called `ivr`.
+- The latest snapshot is stored in `stratdeck/data/iv_snapshot.json`.
+- `ivr` is then used by the scan cache, trade planner and agents.
+
+To refresh the snapshot with live data:
+
+```bash
+export STRATDECK_DATA_MODE=live
+
+python -m stratdeck.cli refresh-ivr-snapshot
+```
+
+Recommended cadence: run once per trading day before the market open (and again if you want to pick up major volatility regime changes intraday).
+
 ## Paper Ledger + Reporting
 
 - `stratdeck/data/journal.csv` logs OPEN/CLOSE events with JSON metrics (credit, qty, preview stats, realized P/L).
