@@ -16,7 +16,6 @@ from .live_quotes import (
 from .tasty_watchlists import get_watchlist_symbols
 
 log = logging.getLogger(__name__)
-
 _provider_instance: Optional[IDataProvider] = None
 _live_quotes_instance: Optional[LiveMarketDataService] = None
 
@@ -31,18 +30,14 @@ def _stop_live_quotes() -> None:
         _live_quotes_instance = None
 
 
-def _resolve_live_symbols() -> list[str]:
-    """Resolve symbols for DXLink streaming.
-
-    Includes the index_core universe plus any configured tasty_watchlist universes.
-    Falls back to a minimal index set on failure.
-    """
+def get_live_universe_symbols() -> set[str]:
+    """Return the union of symbols used for live data (indices + tasty watchlists)."""
 
     try:
         cfg = load_strategy_config()
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("Failed to load strategy config for live symbols: %r", exc)
-        return ["SPX", "XSP"]
+        return {"SPX", "XSP"}
 
     resolved_watchlists: dict[str, list[str]] = {}
 
@@ -80,9 +75,19 @@ def _resolve_live_symbols() -> list[str]:
             _add_from_universe(universe.name)
 
     if not symbols:
-        return ["SPX", "XSP"]
+        return {"SPX", "XSP"}
 
-    return sorted(symbols)
+    return symbols
+
+
+def _resolve_live_symbols() -> list[str]:
+    """
+    Backward-compatible helper returning a sorted list of live symbols.
+
+    Kept for tests and callers that monkeypatch this function.
+    """
+
+    return sorted(get_live_universe_symbols())
 
 
 def _build_live_quotes() -> Optional[LiveMarketDataService]:
@@ -92,9 +97,11 @@ def _build_live_quotes() -> Optional[LiveMarketDataService]:
         return None
 
     symbols = _resolve_live_symbols()
+    if not symbols:
+        return None
 
-    service = LiveMarketDataService(session=session, symbols=symbols)
     try:
+        service = LiveMarketDataService(session=session, symbols=symbols)
         service.start()
         _live_quotes_instance = service
         atexit.register(_stop_live_quotes)
@@ -102,6 +109,7 @@ def _build_live_quotes() -> Optional[LiveMarketDataService]:
     except Exception as exc:
         log.warning("DXLink streamer start failed: %r", exc)
         return None
+
 
 def get_provider() -> IDataProvider:
     global _provider_instance
