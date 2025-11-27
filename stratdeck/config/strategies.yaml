@@ -11,7 +11,7 @@ universes:
     product_type: index
     source:
       type: static
-      tickers: [SPX, XSP]
+      tickers: [SPX, NVDA, AAPL, GOOGL, AMZN]
 
   tasty_watchlist_chris_historical_trades:
     product_type: any

@@ -5,17 +5,21 @@ import logging
 import os
 import sys
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
-from ..tools.ta import resolve_symbols
-from ..strategy_engine import SymbolStrategyTask, choose_width, choose_target_dte
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+
+from ..strategy_engine import SymbolStrategyTask, choose_target_dte, choose_width
 from ..tools.chain_pricing_adapter import ChainPricingAdapter
+from ..tools.filters import FilterDecision, evaluate_candidate_filters
 from ..tools.retries import call_with_retries
+from ..tools.ta import resolve_symbols
 
 if TYPE_CHECKING:
     from stratdeck.data.provider import IDataProvider
 
 log = logging.getLogger(__name__)
-DEBUG_FILTERS = os.getenv("STRATDECK_DEBUG_STRATEGY_FILTERS") == "1"
+DEBUG_FILTERS = os.getenv("STRATDECK_DEBUG_STRATEGY_FILTERS") == "1" or os.getenv(
+    "STRATDECK_DEBUG_FILTERS"
+) == "1"
 
 
 def _extract_price_from_quote(quote: Any) -> Tuple[Optional[float], Optional[str]]:
@@ -194,11 +198,22 @@ def resolve_underlying_price_hint(
     return None
 
 
-@dataclass
-class FilterDecision:
-    passed: bool
-    applied: Dict[str, float]
-    reasons: List[str]
+def _log_filter_decision(candidate: Dict[str, Any], decision: FilterDecision) -> None:
+    if not DEBUG_FILTERS:
+        return
+
+    payload = {
+        "symbol": candidate.get("symbol"),
+        "strategy_type": candidate.get("strategy_type"),
+        "dte_target": candidate.get("dte_target"),
+        "ivr": candidate.get("ivr"),
+        "pop": candidate.get("pop"),
+        "credit_per_width": candidate.get("credit_per_width"),
+        "accepted": decision.passed,
+        "applied": decision.applied,
+        "reasons": decision.reasons,
+    }
+    log.debug("[filters] %s", payload)
 
 
 @dataclass
@@ -523,7 +538,7 @@ class TradePlanner:
             notes.append("[provenance] " + " ".join(provenance_parts))
         # ---------------------------------------------------------------------
 
-                # Canonical IVR source is row["ivr"], but we allow some fallbacks
+        # Canonical IVR source is row["ivr"], but we allow some fallbacks
         ivr = row.get("ivr")
         if ivr is None:
             # Optional fallbacks if your scan rows currently use other keys.
@@ -574,21 +589,12 @@ class TradePlanner:
             "credit_per_width": credit_per_width,
             "estimated_credit": estimated_credit,
         }
-        
+
         if DEBUG_FILTERS:
             print("[trade-ideas] candidate before filters:", candidate, file=sys.stderr)
 
         decision = self._evaluate_strategy_filters(candidate, task.strategy)
-        if DEBUG_FILTERS:
-            status = "PASSED" if decision.passed else "FAILED"
-            detail = "; ".join(decision.reasons) if decision.reasons else "ok"
-            log.debug(
-                "[filters] %s %s %s %s",
-                symbol,
-                strategy_type,
-                status,
-                detail,
-            )
+        _log_filter_decision(candidate, decision)
 
         if not decision.passed:
             return None
@@ -688,62 +694,8 @@ class TradePlanner:
         strategy: Any,
     ) -> FilterDecision:
         filters = getattr(strategy, "filters", None)
-        if filters is None:
-            return FilterDecision(True, {}, [])
-
-        min_pop = getattr(filters, "min_pop", None)
-        min_ivr = getattr(filters, "min_ivr", None)
-        min_credit_per_width = getattr(filters, "min_credit_per_width", None)
-
-        pop = candidate.get("pop")
-        ivr = candidate.get("ivr")
-        credit_per_width = candidate.get("credit_per_width")
-
-        symbol = candidate.get("symbol")
-        strategy_name = getattr(strategy, "name", None) or getattr(strategy, "id", None)
-        applied: Dict[str, float] = {}
-        reasons: List[str] = []
-
-        # --- POP filter ----------------------------------------------------------
-        if min_pop is not None:
-            applied["min_pop"] = float(min_pop)
-            if pop is not None and pop < min_pop:
-                reasons.append(f"min_pop {float(pop):.2f} < {float(min_pop):.2f}")
-
-        # --- IVR filter ----------------------------------------------------------
-        # NOTE: data-missing tolerant – if ivr is None, we do NOT block the idea,
-        # we simply skip the check.
-        if min_ivr is not None:
-            applied["min_ivr"] = float(min_ivr)
-            if ivr is not None and ivr < min_ivr:
-                reasons.append(f"min_ivr {float(ivr):.2f} < {float(min_ivr):.2f}")
-
-        # --- credit_per_width filter --------------------------------------------
-        if min_credit_per_width is not None:
-            applied["min_credit_per_width"] = float(min_credit_per_width)
-            if (
-                credit_per_width is not None
-                and credit_per_width < min_credit_per_width
-            ):
-                reasons.append(
-                    "min_credit_per_width "
-                    f"{float(credit_per_width):.4f} < {float(min_credit_per_width):.4f}"
-                )
-
-        passed = len(reasons) == 0
-
-        if DEBUG_FILTERS:
-            status = "PASSED" if passed else "FAILED"
-            detail = ", ".join(reasons) if reasons else "all checks satisfied"
-            log.debug(
-                "[filters] %s %s %s: %s",
-                symbol,
-                strategy_name or "",
-                status,
-                detail,
-            )
-
-        return FilterDecision(passed, applied, reasons)
+        dte_rule = getattr(strategy, "dte", None)
+        return evaluate_candidate_filters(candidate, filters, dte_rule)
 
     def _strategy_type_from_template(self, template: Any, dir_bias: str) -> str:
         """
