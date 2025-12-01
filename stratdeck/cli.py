@@ -40,7 +40,11 @@ from .tools.position_monitor import compute_position_metrics, evaluate_exit_rule
 from .tools.vol import load_snapshot
 from .data.tasty_watchlists import get_watchlist_symbols
 from .tools.build_iv_snapshot import IV_SNAPSHOT_PATH, build_iv_snapshot
-from .data.market_metrics import DEFAULT_CHUNK_SIZE, fetch_market_metrics_raw
+from .data.market_metrics import (
+    DEFAULT_CHUNK_SIZE,
+    _extract_ivr_from_item,
+    fetch_market_metrics_raw,
+)
 
 log = logging.getLogger(__name__)
 
@@ -701,6 +705,61 @@ def dump_market_metrics(symbols: str, chunk_size: int):
 
     payload = fetch_market_metrics_raw(symbol_list, chunk_size=chunk_size)
     click.echo(json.dumps(payload, indent=2, sort_keys=True))
+
+
+@cli.command("ivr-debug")
+@click.argument("symbols")
+@click.option(
+    "--chunk-size",
+    default=DEFAULT_CHUNK_SIZE,
+    show_default=True,
+    help="Batch size for the market-metrics request.",
+)
+def ivr_debug(symbols: str, chunk_size: int):
+    """
+    Debug IV Rank for one or more symbols by comparing raw market-metrics fields
+    and the extracted IVR used by StratDeck.
+    """
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not syms:
+        raise click.UsageError("Provide at least one symbol (comma separated)")
+
+    payload = fetch_market_metrics_raw(syms, chunk_size=chunk_size)
+    items = payload.get("data", {}).get("items", [])
+
+    by_symbol = {}
+    for item in items:
+        sym = (item.get("symbol") or "").upper()
+        if not sym:
+            continue
+        by_symbol[sym] = item
+
+    for sym in syms:
+        item = by_symbol.get(sym)
+        if not item:
+            click.echo(f"Symbol: {sym}")
+            click.echo("  (no item returned from /market-metrics)")
+            click.echo()
+            continue
+
+        fields = {
+            "implied-volatility-index-rank": item.get("implied-volatility-index-rank"),
+            "tw-implied-volatility-index-rank": item.get(
+                "tw-implied-volatility-index-rank"
+            ),
+            "tos-implied-volatility-index-rank": item.get(
+                "tos-implied-volatility-index-rank"
+            ),
+        }
+        ivr = _extract_ivr_from_item(item)
+
+        click.echo(f"Symbol: {sym}")
+        click.echo(f"  raw_fields: {fields}")
+        if ivr is None:
+            click.echo("  extracted_ivr: None")
+        else:
+            click.echo(f"  extracted_ivr: {ivr:.6f} ({ivr * 100:.2f}%)")
+        click.echo()
 
 
 @cli.command("refresh-ivr-snapshot")
