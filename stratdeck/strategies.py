@@ -199,6 +199,10 @@ class StrategyTemplate(BaseModel):
     delta: Optional[DeltaRule] = None
     width_rule: Optional[WidthRule] = None
     filters: Optional[StrategyFilters] = None
+    allowed_trend_regimes: Optional[List[str]] = None
+    allowed_vol_regimes: Optional[List[str]] = None
+    blocked_trend_regimes: Optional[List[str]] = None
+    blocked_vol_regimes: Optional[List[str]] = None
 
     @field_validator("applies_to_universes")
     @classmethod

@@ -215,6 +215,8 @@ def choose_target_dte(
 def build_strategy_universe_assignments(
     cfg: Optional[StrategyConfig] = None,
     tasty_watchlist_resolver: Optional[Callable[[str, Optional[int]], List[str]]] = None,
+    strategy_filter: Optional[Iterable[str]] = None,
+    universe_filter: Optional[Iterable[str]] = None,
 ) -> List[StrategyUniverseAssignment]:
     """
     Expand config into concrete (strategy, universe, symbols) bundles.
@@ -224,13 +226,20 @@ def build_strategy_universe_assignments(
     if cfg is None:
         cfg = load_strategy_config()
 
+    strategy_filter_set = {s.strip() for s in strategy_filter} if strategy_filter else set()
+    universe_filter_set = {u.strip() for u in universe_filter} if universe_filter else set()
+
     assignments: List[StrategyUniverseAssignment] = []
 
     for strat in cfg.strategies:
         if not strat.enabled:
             continue
+        if strategy_filter_set and strat.name not in strategy_filter_set:
+            continue
 
         for universe_name in strat.applies_to_universes:
+            if universe_filter_set and universe_name not in universe_filter_set:
+                continue
             universe = cfg.universes.get(universe_name)
             if universe is None:
                 raise KeyError(
