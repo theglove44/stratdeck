@@ -7,7 +7,7 @@
     "migrate": "tsx packages/data/src/migrate.ts",
     "etl": "python3 scripts/ingest_trades.py --reset",
     "mcp:smoke": "tsx scripts/mcp_smoke.ts",
-    "test": "tsx --test \"tests/**/*.spec.ts\""
+    "test": "tsx --test tests/**/*.spec.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
