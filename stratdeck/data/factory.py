@@ -117,8 +117,16 @@ def get_provider() -> IDataProvider:
         return _provider_instance
     mode = os.getenv("STRATDECK_DATA_MODE", "mock").lower()
     if mode == "live":
-        live_quotes = _build_live_quotes()
-        _provider_instance = TastyProvider(live_quotes=live_quotes)
+        try:
+            live_quotes = _build_live_quotes()
+            _provider_instance = TastyProvider(live_quotes=live_quotes)
+        except Exception as exc:
+            log.warning(
+                "Live provider init failed (%s); falling back to MockProvider. "
+                "Set STRATDECK_DATA_MODE=mock to silence live-mode attempts.",
+                exc,
+            )
+            _provider_instance = MockProvider()
     else:
         _provider_instance = MockProvider()
     return _provider_instance

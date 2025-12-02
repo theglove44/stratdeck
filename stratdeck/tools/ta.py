@@ -711,7 +711,11 @@ class ChartistEngine:
             return self._mock_ohlcv(symbol, lookback_bars)
 
         if yf is None:
-            raise RuntimeError("No data_client provided, and yfinance is not installed.")
+            warnings.warn(
+                "No data_client provided and yfinance is not installed; "
+                "falling back to synthetic OHLCV data."
+            )
+            return self._mock_ohlcv(symbol, lookback_bars)
 
         # 🔹 NEW: map SPX/XSP → ^GSPC (or other aliases) for yfinance
         yf_symbol = self._map_symbol_for_data(symbol)
@@ -727,7 +731,6 @@ class ChartistEngine:
 
         # If still nothing, fall back to synthetic (keep your existing warning)
         if df is None or df.empty:
-            import warnings
             warnings.warn(
                 f"ChartistEngine received no OHLCV data for {symbol} "
                 f"(mapped to {yf_symbol}) from yfinance; using synthetic data instead."
@@ -764,17 +767,19 @@ class ChartistEngine:
         """
         Generate synthetic OHLCV for testing wired flows without a real data source.
         """
-        rng = pd.date_range(end=pd.Timestamp.utcnow(), periods=lookback_bars, freq="30min")
+        dates = pd.date_range(end=pd.Timestamp.utcnow(), periods=lookback_bars, freq="30min")
+        # Deterministic seed per symbol keeps mock TA outcomes stable across runs.
+        rng = np.random.default_rng(abs(hash(symbol)) % (2**32))
         base_price = 100.0
-        noise = np.random.normal(0, 0.5, size=lookback_bars).cumsum()
+        noise = rng.normal(0, 0.5, size=lookback_bars).cumsum()
         trend = np.linspace(-1, 1, lookback_bars)
         price = base_price + trend + noise
 
-        high = price + np.random.uniform(0.2, 0.8, size=lookback_bars)
-        low = price - np.random.uniform(0.2, 0.8, size=lookback_bars)
-        open_ = price + np.random.uniform(-0.3, 0.3, size=lookback_bars)
-        close = price + np.random.uniform(-0.3, 0.3, size=lookback_bars)
-        volume = np.random.randint(1_000, 10_000, size=lookback_bars)
+        high = price + rng.uniform(0.2, 0.8, size=lookback_bars)
+        low = price - rng.uniform(0.2, 0.8, size=lookback_bars)
+        open_ = price + rng.uniform(-0.3, 0.3, size=lookback_bars)
+        close = price + rng.uniform(-0.3, 0.3, size=lookback_bars)
+        volume = rng.integers(1_000, 10_000, size=lookback_bars)
 
         df = pd.DataFrame(
             {
@@ -784,6 +789,6 @@ class ChartistEngine:
                 "close": close,
                 "volume": volume,
             },
-            index=rng,
+            index=dates,
         )
         return df

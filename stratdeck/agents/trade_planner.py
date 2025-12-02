@@ -209,6 +209,8 @@ def _log_filter_decision(candidate: Dict[str, Any], decision: FilterDecision) ->
         "ivr": candidate.get("ivr"),
         "pop": candidate.get("pop"),
         "credit_per_width": candidate.get("credit_per_width"),
+        "trend_regime": candidate.get("trend_regime"),
+        "vol_regime": candidate.get("vol_regime"),
         "accepted": decision.passed,
         "applied": decision.applied,
         "reasons": decision.reasons,
@@ -588,6 +590,8 @@ class TradePlanner:
             "ivr": ivr,
             "credit_per_width": credit_per_width,
             "estimated_credit": estimated_credit,
+            "trend_regime": trend_regime,
+            "vol_regime": vol_regime,
         }
 
         if DEBUG_FILTERS:
@@ -695,7 +699,12 @@ class TradePlanner:
     ) -> FilterDecision:
         filters = getattr(strategy, "filters", None)
         dte_rule = getattr(strategy, "dte", None)
-        return evaluate_candidate_filters(candidate, filters, dte_rule)
+        return evaluate_candidate_filters(
+            candidate,
+            filters=filters,
+            dte_rule=dte_rule,
+            strategy_template=strategy,
+        )
 
     def _strategy_type_from_template(self, template: Any, dir_bias: str) -> str:
         """

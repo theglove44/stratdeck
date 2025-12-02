@@ -1075,18 +1075,15 @@ def trade_ideas(
     """
     strategy_cfg = load_strategy_config()
 
+    strategy_filter_set = {s.strip() for s in strategy_filters} if strategy_filters else None
+    universe_filter_set = {u.strip() for u in universe_filters} if universe_filters else None
+
     assignments = build_strategy_universe_assignments(
         cfg=strategy_cfg,
         tasty_watchlist_resolver=_resolve_tasty_watchlist,
+        strategy_filter=strategy_filter_set,
+        universe_filter=universe_filter_set,
     )
-
-    if universe_filters:
-        universe_filter_set = {u.strip() for u in universe_filters}
-        assignments = [a for a in assignments if a.universe.name in universe_filter_set]
-
-    if strategy_filters:
-        strategy_filter_set = {s.strip() for s in strategy_filters}
-        assignments = [a for a in assignments if a.strategy.name in strategy_filter_set]
 
     if not assignments:
         click.echo(
