@@ -4,11 +4,14 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
+from ..filters import HumanRulesFilter
 from ..strategy_engine import SymbolStrategyTask, choose_target_dte, choose_width
 from ..tools.chain_pricing_adapter import ChainPricingAdapter
+from ..tools.dates import compute_dte
 from ..tools.filters import FilterDecision, evaluate_candidate_filters
 from ..tools.retries import call_with_retries
 from ..tools.ta import resolve_symbols
@@ -235,6 +238,8 @@ class TradeLeg:
     strike: float
     expiry: Optional[str]
     quantity: int = 1
+    delta: Optional[float] = None
+    dte: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -257,8 +262,13 @@ class TradeIdea:
     vol_context: str  # "normal", "elevated", "expansion_likely"
     rationale: str  # one-paragraph explanation
     legs: List[TradeLeg]
+    # legs is canonical; short_legs/long_legs are derived views pointing to the
+    # same TradeLeg instances so fields like delta/dte stay consistent.
+    short_legs: Optional[List[TradeLeg]] = None
+    long_legs: Optional[List[TradeLeg]] = None
     underlying_price_hint: Optional[float] = None
     dte_target: Optional[int] = None
+    dte: Optional[int] = None
     spread_width: Optional[float] = None
     target_delta: Optional[float] = None
     notes: List[str] = None
@@ -267,6 +277,13 @@ class TradeIdea:
     pop: Optional[float] = None
     credit_per_width: Optional[float] = None
     estimated_credit: Optional[float] = None  # total net credit for the structure
+    short_put_delta: Optional[float] = None
+    short_call_delta: Optional[float] = None
+    position_delta: Optional[float] = None
+    buying_power: Optional[float] = None
+    expiry: Optional[str] = None
+    expiry_is_monthly: Optional[bool] = None
+    earnings_date: Optional[str] = None
     # Provenance + filter metadata
     strategy_id: Optional[str] = None
     universe_id: Optional[str] = None
@@ -277,6 +294,10 @@ class TradeIdea:
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["legs"] = [leg.to_dict() for leg in self.legs]
+        if self.short_legs is not None:
+            d["short_legs"] = [leg.to_dict() for leg in self.short_legs]
+        if self.long_legs is not None:
+            d["long_legs"] = [leg.to_dict() for leg in self.long_legs]
         return d
 
 
@@ -318,6 +339,34 @@ class TradePlanner:
         self.chains_client = chains_client
         self.pricing_client = pricing_client
 
+    @staticmethod
+    def _derive_leg_views(legs: Sequence[TradeLeg]) -> Tuple[List[TradeLeg], List[TradeLeg]]:
+        """Return short_legs/long_legs views derived from the canonical legs list.
+
+        Uses side when present; falls back to quantity sign to stay tolerant of
+        upstream data shapes. The returned legs are the original objects (no copies)
+        so fields like delta/dte remain in sync across views.
+        """
+
+        short_legs: List[TradeLeg] = []
+        long_legs: List[TradeLeg] = []
+
+        for leg in legs or []:
+            side = str(getattr(leg, "side", "")).lower()
+            qty = getattr(leg, "quantity", 0)
+
+            if side == "short":
+                short_legs.append(leg)
+            elif side == "long":
+                long_legs.append(leg)
+            else:
+                if qty < 0:
+                    short_legs.append(leg)
+                elif qty > 0:
+                    long_legs.append(leg)
+
+        return short_legs, long_legs
+
     # ---------- Public API ----------
 
     def generate_from_scan_results(
@@ -352,6 +401,15 @@ class TradePlanner:
                 continue
 
             ideas.extend(per_symbol_ideas[:max_per_symbol])
+
+        for idea in ideas:
+            if getattr(idea, "short_legs", None):
+                print(
+                    "[DEBUG] idea",
+                    idea.symbol,
+                    "short_delta:",
+                    idea.short_legs[0].delta,
+                )
 
         return ideas
 
@@ -469,6 +527,10 @@ class TradePlanner:
         if strategy_type == "skip":
             return None
 
+        delta_rule = getattr(task.strategy, "delta", None)
+        target_delta_band = getattr(delta_rule, "short_leg", None)
+        target_delta_value = getattr(target_delta_band, "target", None) or 0.20
+
         data_symbol, trade_symbol = resolve_symbols(symbol)
 
         underlying_hint = resolve_underlying_price_hint(
@@ -482,25 +544,38 @@ class TradePlanner:
             ),
         )
 
-        target_dte = self._select_dte_for_task(
+        expiry_selection = self._select_expiry_for_task(
             symbol=symbol,
             strategy=task.strategy,
             default_dte_target=default_dte_target,
         )
+        target_dte = expiry_selection.get("dte") or default_dte_target
 
         width_override = self._select_width_for_task(
             strategy=task.strategy,
             underlying_hint=underlying_hint,
         )
 
-        legs, spread_width = self._build_legs_from_ta(
+        legs, spread_width, chain_metrics = self._build_structure_from_chain(
+            symbol=symbol,
             strategy_type=strategy_type,
-            support_levels=support_levels,
-            resistance_levels=resistance_levels,
+            strategy=task.strategy,
             underlying_hint=underlying_hint,
-            dte_target=target_dte,
+            expiry_selection=expiry_selection,
             width_override=width_override,
+            target_delta=target_delta_value,
         )
+
+        if not legs:
+            legs, spread_width = self._build_legs_from_ta(
+                strategy_type=strategy_type,
+                support_levels=support_levels,
+                resistance_levels=resistance_levels,
+                underlying_hint=underlying_hint,
+                dte_target=target_dte,
+                width_override=width_override,
+            )
+            chain_metrics = {}
 
         if not legs:
             return None
@@ -548,10 +623,29 @@ class TradePlanner:
             ivr = row.get("iv_rank") or row.get("iv_rank_1y") or row.get("iv_rank_1yr")
 
         # --- Chain-based metrics (POP, credit_per_width, estimated_credit) -
-        pop: Optional[float] = None
-        credit_per_width: Optional[float] = None
-        estimated_credit: Optional[float] = None
+        pop: Optional[float] = chain_metrics.get("pop")
+        credit_per_width: Optional[float] = chain_metrics.get("credit_per_width")
+        estimated_credit: Optional[float] = chain_metrics.get("estimated_credit")
+        buying_power: Optional[float] = chain_metrics.get("buying_power")
+        short_put_delta = chain_metrics.get("short_put_delta")
+        short_call_delta = chain_metrics.get("short_call_delta")
+        position_delta = chain_metrics.get("position_delta")
+        expiry_final = chain_metrics.get("expiry") or expiry_selection.get("expiry")
+        expiry_is_monthly = chain_metrics.get("expiry_is_monthly") or expiry_selection.get(
+            "is_monthly"
+        )
+        if chain_metrics.get("dte") is not None:
+            target_dte = chain_metrics.get("dte")  # prefer chain-derived
 
+        # Preserve per-leg deltas captured during chain construction.
+        for leg in legs:
+            if leg.delta is None and leg.side == "short":
+                if leg.type == "put" and short_put_delta is not None:
+                    leg.delta = short_put_delta
+                elif leg.type == "call" and short_call_delta is not None:
+                    leg.delta = short_call_delta
+
+        pricing: Optional[Dict[str, Any]] = None
         if self.chains_client is not None:
             price_fn = getattr(self.chains_client, "price_structure", None)
             if price_fn is not None:
@@ -564,7 +658,8 @@ class TradePlanner:
                         # For now, we use the same 0.20 target delta you hard-code
                         # into TradeIdea.target_delta. This can be wired to
                         # StrategyTemplate later if you like.
-                        target_delta_hint=0.20,
+                        target_delta_hint=target_delta_value,
+                        expiry=expiry_final,
                     )
                 except Exception as exc:
                     pricing = None
@@ -576,9 +671,128 @@ class TradePlanner:
                             exc,
                         )
                 if pricing:
-                    pop = pricing.get("pop", pop)
-                    credit_per_width = pricing.get("credit_per_width", credit_per_width)
-                    estimated_credit = pricing.get("credit", estimated_credit)
+                    if pop is None and pricing.get("pop") is not None:
+                        pop = pricing.get("pop")
+                    if credit_per_width is None and pricing.get("credit_per_width") is not None:
+                        credit_per_width = pricing.get("credit_per_width")
+                    if estimated_credit is None and pricing.get("credit") is not None:
+                        estimated_credit = pricing.get("credit")
+                    expiry_final = expiry_final or pricing.get("expiry")
+                    if buying_power is None and spread_width and pricing.get("credit") is not None:
+                        try:
+                            buying_power = max(
+                                (float(spread_width) - float(pricing.get("credit"))) * 100.0,
+                                0.0,
+                            )
+                        except Exception:
+                            buying_power = buying_power
+                    if (
+                        short_put_delta is None
+                        and strategy_type == "short_put_spread"
+                        and pricing.get("short_delta") is not None
+                    ):
+                        short_put_delta = pricing.get("short_delta")
+                    if (
+                        short_call_delta is None
+                        and strategy_type == "short_call_spread"
+                        and pricing.get("short_delta") is not None
+                    ):
+                        short_call_delta = pricing.get("short_delta")
+
+        pricing_legs = pricing.get("legs") if pricing else None
+        pricing_short_delta = pricing.get("short_delta") if pricing else None
+        pricing_long_delta = pricing.get("long_delta") if pricing else None
+        pricing_dte = pricing.get("dte") if pricing else None
+        pricing_expiry = pricing.get("expiry") if pricing else None
+        if pricing_expiry and (
+            expiry_final is None
+            or (isinstance(expiry_final, str) and expiry_final.endswith("DTE"))
+        ):
+            expiry_final = pricing_expiry
+
+        # If pricing provided expiry/dte hints, prefer them for legs still carrying placeholders.
+        short_leg_delta_from_pricing = None
+        long_leg_delta_from_pricing = None
+        if isinstance(pricing_legs, dict):
+            short_info = pricing_legs.get("short")
+            long_info = pricing_legs.get("long")
+            if isinstance(short_info, dict):
+                short_leg_delta_from_pricing = short_info.get("delta")
+            if isinstance(long_info, dict):
+                long_leg_delta_from_pricing = long_info.get("delta")
+
+        for leg in legs:
+            if leg.delta is None:
+                if leg.side == "short":
+                    candidate_delta = None
+                    if leg.type == "put" and short_put_delta is not None:
+                        candidate_delta = short_put_delta
+                    elif leg.type == "call" and short_call_delta is not None:
+                        candidate_delta = short_call_delta
+                    if candidate_delta is None:
+                        candidate_delta = short_leg_delta_from_pricing or pricing_short_delta
+                    if candidate_delta is not None:
+                        leg.delta = candidate_delta
+                elif leg.side == "long":
+                    candidate_delta = long_leg_delta_from_pricing or pricing_long_delta
+                    if candidate_delta is not None:
+                        leg.delta = candidate_delta
+            if pricing_dte is not None and leg.dte is None:
+                leg.dte = pricing_dte
+            if pricing_expiry and (
+                leg.expiry is None
+                or (isinstance(leg.expiry, str) and leg.expiry.endswith("DTE"))
+            ):
+                leg.expiry = pricing_expiry
+
+        # Final backfill: if pricing/structure did not supply deltas, pull them
+        # directly from the option chain by matching strikes.
+        finder = getattr(self.chains_client, "find_option_by_strike", None) if self.chains_client else None
+        if callable(finder):
+            for leg in legs:
+                if leg.delta is not None:
+                    continue
+                quote_info = None
+                try:
+                    quote_info = finder(
+                        symbol=symbol,
+                        option_type=getattr(leg, "type", None),
+                        strike=getattr(leg, "strike", None),
+                        expiry=expiry_final,
+                        dte_target=target_dte,
+                    )
+                except Exception:
+                    quote_info = None
+
+                if not isinstance(quote_info, dict):
+                    continue
+
+                delta_from_chain = quote_info.get("delta")
+                if delta_from_chain is not None:
+                    leg.delta = delta_from_chain
+                    if leg.side == "short":
+                        if leg.type == "put" and short_put_delta is None:
+                            short_put_delta = delta_from_chain
+                        elif leg.type == "call" and short_call_delta is None:
+                            short_call_delta = delta_from_chain
+
+                if leg.dte is None and quote_info.get("dte") is not None:
+                    leg.dte = quote_info.get("dte")
+                if expiry_final is None and quote_info.get("expiry"):
+                    expiry_final = quote_info.get("expiry")
+
+        if expiry_final is None and target_dte is not None:
+            expiry_final = f"{target_dte}DTE"
+
+        dte_actual: Optional[int] = chain_metrics.get("dte")
+        if dte_actual is None and pricing_dte is not None:
+            dte_actual = pricing_dte
+        if dte_actual is None and expiry_final:
+            dte_actual = compute_dte(expiry_final)
+        if dte_actual is None:
+            dte_actual = target_dte
+
+        earnings_date = row.get("earnings_date")
 
         candidate: Dict[str, Any] = {
             "symbol": symbol,
@@ -586,12 +800,20 @@ class TradePlanner:
             "direction": direction,
             "spread_width": spread_width,
             "dte_target": target_dte,
+            "dte": dte_actual,
             "pop": pop,
             "ivr": ivr,
             "credit_per_width": credit_per_width,
             "estimated_credit": estimated_credit,
             "trend_regime": trend_regime,
             "vol_regime": vol_regime,
+            "short_put_delta": short_put_delta,
+            "short_call_delta": short_call_delta,
+            "position_delta": position_delta,
+            "buying_power": buying_power,
+            "expiry": expiry_final,
+            "expiry_is_monthly": expiry_is_monthly,
+            "earnings_date": earnings_date,
         }
 
         if DEBUG_FILTERS:
@@ -603,6 +825,8 @@ class TradePlanner:
         if not decision.passed:
             return None
 
+        short_legs, long_legs = self._derive_leg_views(legs)
+
         idea = TradeIdea(
             symbol=symbol,
             data_symbol=data_symbol,
@@ -612,16 +836,26 @@ class TradePlanner:
             vol_context=vol_bias,
             rationale=rationale,
             legs=legs,
+            short_legs=short_legs,
+            long_legs=long_legs,
             underlying_price_hint=underlying_hint,
             dte_target=target_dte,
+            dte=dte_actual,
             spread_width=spread_width,
-            target_delta=0.20,
+            target_delta=target_delta_value,
             notes=notes,
             ivr=ivr,
             # NEW: expose chain-based metrics to TraderAgent
             pop=pop,
             credit_per_width=credit_per_width,
             estimated_credit=estimated_credit,
+            short_put_delta=short_put_delta,
+            short_call_delta=short_call_delta,
+            position_delta=position_delta,
+            buying_power=buying_power,
+            expiry=expiry_final or (f"{target_dte}DTE" if target_dte else None),
+            expiry_is_monthly=expiry_is_monthly,
+            earnings_date=earnings_date,
             strategy_id=template_name,
             universe_id=universe_name,
             filters_passed=decision.passed,
@@ -668,6 +902,95 @@ class TradePlanner:
         except Exception:
             return []
 
+    @staticmethod
+    def _is_third_friday(expiry_str: str) -> Optional[bool]:
+        try:
+            exp = datetime.fromisoformat(str(expiry_str)).date()
+        except Exception:
+            return None
+        return exp.weekday() == 4 and 15 <= exp.day <= 21
+
+    def _dte_from_expiry(self, expiry_str: str) -> Optional[int]:
+        return compute_dte(expiry_str)
+
+    def _get_expiration_candidates(self, symbol: str) -> List[Dict[str, Any]]:
+        getter = getattr(self.chains_client, "get_expiration_candidates", None)
+        if callable(getter):
+            try:
+                cands = getter(symbol) or []
+                return list(cands)
+            except Exception:
+                return []
+        # Fallback to bare DTEs.
+        dtes = self._get_available_dtes(symbol)
+        today = datetime.now(timezone.utc).date()
+        return [
+            {
+                "expiration-date": (today + timedelta(days=int(d))).isoformat(),
+                "days-to-expiration": int(d),
+                "is_monthly": self._is_third_friday(
+                    (today + timedelta(days=int(d))).isoformat()
+                ),
+            }
+            for d in dtes
+        ]
+
+    def _select_expiry_for_task(
+        self,
+        symbol: str,
+        strategy: Any,
+        default_dte_target: int,
+    ) -> Dict[str, Any]:
+        expiry_rules = getattr(strategy, "expiry_rules", None)
+        dte_rule = getattr(strategy, "dte", None)
+        target = dte_rule.target if dte_rule and dte_rule.target is not None else default_dte_target
+
+        candidates = []
+        for exp in self._get_expiration_candidates(symbol):
+            expiry_str = exp.get("expiration-date") or exp.get("expiry")
+            dte_val = exp.get("days-to-expiration") or exp.get("dte")
+            if dte_val is None and expiry_str:
+                dte_val = self._dte_from_expiry(expiry_str)
+            try:
+                dte_val = int(dte_val) if dte_val is not None else None
+            except Exception:
+                dte_val = None
+            if dte_val is None:
+                continue
+
+            is_monthly = exp.get("is_monthly")
+            if is_monthly is None and expiry_str:
+                is_monthly = self._is_third_friday(expiry_str)
+
+            if dte_rule is not None:
+                if dte_rule.min is not None and dte_val < dte_rule.min:
+                    continue
+                if dte_rule.max is not None and dte_val > dte_rule.max:
+                    continue
+
+            if expiry_rules and getattr(expiry_rules, "monthlies_only", False):
+                if is_monthly is False:
+                    continue
+
+            candidates.append(
+                {
+                    "expiry": expiry_str,
+                    "dte": dte_val,
+                    "is_monthly": is_monthly,
+                }
+            )
+
+        if not candidates:
+            fallback_dte = self._select_dte_for_task(symbol, strategy, default_dte_target)
+            return {
+                "expiry": None,
+                "dte": fallback_dte,
+                "is_monthly": None,
+            }
+
+        best = min(candidates, key=lambda c: abs((c.get("dte") or target) - target))
+        return best
+
     def _select_width_for_task(
         self,
         strategy: Any,
@@ -699,11 +1022,29 @@ class TradePlanner:
     ) -> FilterDecision:
         filters = getattr(strategy, "filters", None)
         dte_rule = getattr(strategy, "dte", None)
-        return evaluate_candidate_filters(
+        human_decision = HumanRulesFilter(strategy).evaluate(candidate)
+        if not human_decision.passed:
+            return human_decision
+
+        base_decision = evaluate_candidate_filters(
             candidate,
             filters=filters,
             dte_rule=dte_rule,
             strategy_template=strategy,
+        )
+
+        applied = {**(human_decision.applied or {}), **(base_decision.applied or {})}
+        if not base_decision.passed:
+            return FilterDecision(
+                passed=False,
+                applied=applied,
+                reasons=base_decision.reasons,
+            )
+
+        return FilterDecision(
+            passed=True,
+            applied=applied,
+            reasons=[],
         )
 
     def _strategy_type_from_template(self, template: Any, dir_bias: str) -> str:
@@ -827,6 +1168,8 @@ class TradePlanner:
             vol_regime=vol_regime,
         )
 
+        short_legs, long_legs = self._derive_leg_views(legs)
+
         idea = TradeIdea(
             symbol=symbol,
             data_symbol=data_symbol,
@@ -836,8 +1179,11 @@ class TradePlanner:
             vol_context=vol_bias,
             rationale=rationale,
             legs=legs,
+            short_legs=short_legs,
+            long_legs=long_legs,
             underlying_price_hint=underlying_hint,
             dte_target=dte_target,
+            dte=dte_target,
             spread_width=spread_width,
             target_delta=0.20,
             notes=notes,
@@ -926,6 +1272,122 @@ class TradePlanner:
 
         return None
 
+    def _build_structure_from_chain(
+        self,
+        symbol: str,
+        strategy_type: str,
+        strategy: Any,
+        underlying_hint: Optional[float],
+        expiry_selection: Dict[str, Any],
+        width_override: Optional[float],
+        target_delta: float,
+    ) -> Tuple[List[TradeLeg], float, Dict[str, Any]]:
+        """
+        Prefer chain-based construction using target deltas, falling back to TA legs.
+        """
+        width = width_override or (underlying_hint * 0.01 if underlying_hint else None)
+        if width is None or width <= 0:
+            width = 5.0
+        delta_rule = getattr(strategy, "delta", None)
+        delta_band = getattr(delta_rule, "short_leg", None)
+        expiry_str = expiry_selection.get("expiry")
+        dte_target = expiry_selection.get("dte")
+        expiry_is_monthly = expiry_selection.get("is_monthly")
+
+        legs: List[TradeLeg] = []
+        metrics: Dict[str, Any] = {}
+        spread_width: float = float(width or 0.0)
+
+        builder_vertical = getattr(self.chains_client, "build_vertical_by_delta", None)
+        builder_condor = getattr(self.chains_client, "build_iron_condor_by_delta", None)
+
+        structure: Optional[Dict[str, Any]] = None
+
+        if strategy_type == "iron_condor" and callable(builder_condor):
+            structure = builder_condor(
+                symbol=symbol,
+                width=float(width or 0.0) if width is not None else 0.0,
+                target_delta=target_delta,
+                delta_band=delta_band,
+                expiry=expiry_str,
+                dte_target=dte_target,
+            )
+        elif strategy_type in {"short_put_spread", "short_call_spread"} and callable(builder_vertical):
+            opt_type = "put" if strategy_type == "short_put_spread" else "call"
+            structure = builder_vertical(
+                symbol=symbol,
+                option_type=opt_type,
+                width=float(width or 0.0) if width is not None else 0.0,
+                target_delta=target_delta,
+                delta_band=delta_band,
+                expiry=expiry_str,
+                dte_target=dte_target,
+            )
+
+        if structure:
+            legs_data = structure.get("legs") or []
+            expiry_final = structure.get("expiry") or expiry_str
+            dte_value = structure.get("dte")
+            if dte_value is None and expiry_final:
+                dte_value = compute_dte(expiry_final)
+            if dte_value is None:
+                dte_value = dte_target
+            spread_width = float(structure.get("width") or width or 0.0)
+            for leg in legs_data:
+                legs.append(
+                    TradeLeg(
+                        side=str(leg.get("side", "")),
+                        type=str(leg.get("type", "")),
+                        strike=float(leg.get("strike")),
+                        expiry=expiry_final,
+                        quantity=int(leg.get("quantity", 1)),
+                        delta=leg.get("delta"),
+                        dte=leg.get("dte") or dte_value,
+                    )
+                )
+            credit = structure.get("credit")
+            credit_per_width = structure.get("credit_per_width")
+            pop = structure.get("pop")
+            position_delta = structure.get("position_delta")
+
+            short_put_delta = structure.get("short_put_delta")
+            short_call_delta = structure.get("short_call_delta")
+            if short_put_delta is None and strategy_type == "short_put_spread":
+                short_put_delta = structure.get("short_delta")
+            if short_call_delta is None and strategy_type == "short_call_spread":
+                short_call_delta = structure.get("short_delta")
+
+            metrics.update(
+                {
+                    "pop": pop,
+                    "credit_per_width": credit_per_width,
+                    "estimated_credit": credit,
+                    "short_put_delta": short_put_delta,
+                    "short_call_delta": short_call_delta,
+                    "position_delta": position_delta,
+                    "expiry": expiry_final,
+                    "expiry_is_monthly": expiry_is_monthly,
+                    "dte": dte_value,
+                }
+            )
+            if credit is not None and spread_width:
+                metrics["buying_power"] = max(
+                    (float(spread_width) - float(credit)) * 100.0, 0.0
+                )
+            if strategy_type == "iron_condor":
+                width_ref = spread_width or width or 0.0
+                if credit is not None and width_ref:
+                    metrics["buying_power"] = max(
+                        (float(width_ref) - float(credit)) * 100.0, 0.0
+                    )
+
+            if dte_value is None and dte_target is not None and "dte" not in metrics:
+                metrics["dte"] = dte_target
+
+            return legs, spread_width, metrics
+
+        return [], spread_width, metrics
+
     def _build_legs_from_ta(
         self,
         strategy_type: str,
@@ -989,24 +1451,28 @@ class TradePlanner:
                     type="put",
                     strike=float(short_put_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
                 TradeLeg(
                     side="long",
                     type="put",
                     strike=float(long_put_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
                 TradeLeg(
                     side="short",
                     type="call",
                     strike=float(short_call_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
                 TradeLeg(
                     side="long",
                     type="call",
                     strike=float(long_call_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
             ]
 
@@ -1021,12 +1487,14 @@ class TradePlanner:
                     type="put",
                     strike=float(short_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
                 TradeLeg(
                     side="long",
                     type="put",
                     strike=float(long_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
             ]
 
@@ -1041,12 +1509,14 @@ class TradePlanner:
                     type="call",
                     strike=float(short_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
                 TradeLeg(
                     side="long",
                     type="call",
                     strike=float(long_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
             ]
 
@@ -1059,12 +1529,14 @@ class TradePlanner:
                     type="call",
                     strike=float(long_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
                 TradeLeg(
                     side="short",
                     type="call",
                     strike=float(short_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
             ]
 
@@ -1077,12 +1549,14 @@ class TradePlanner:
                     type="put",
                     strike=float(long_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
                 TradeLeg(
                     side="short",
                     type="put",
                     strike=float(short_strike),
                     expiry=expiry_str,
+                    dte=dte_target,
                 ),
             ]
 

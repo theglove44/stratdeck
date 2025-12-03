@@ -35,6 +35,18 @@ class MockProvider(IDataProvider):
     def get_positions(self) -> List[Dict[str, Any]]:
         return []
 
+    def get_option_expirations(self, symbol: str) -> List[Dict[str, Any]]:
+        today = datetime.utcnow().date()
+        expiries = [today + timedelta(days=d) for d in (30, 45, 60)]
+        return [
+            {
+                "expiration-date": exp.isoformat(),
+                "days-to-expiration": (exp - today).days,
+                "expiration-type": "Monthly",
+            }
+            for exp in expiries
+        ]
+
     def preview_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": True, "fill_price": 1.23, "fees": 1.00, "preview": True}
 

@@ -482,3 +482,17 @@ def evaluate_exit_rules(metrics: PositionMetrics, rules: ExitRulesConfig) -> Exi
         triggered_rules=triggered_rules,
         notes=None,
     )
+
+
+def check_exit_signals(position: PaperPosition, rules: ExitRulesConfig, now: Optional[datetime] = None) -> List[str]:
+    """
+    Convenience wrapper that returns human-readable exit signals for a position.
+    """
+    metrics = compute_position_metrics(position, exit_rules=rules, now=now)
+    decision = evaluate_exit_rules(metrics, rules)
+
+    reasons: List[str] = []
+    if decision.action == "exit" and decision.reason != "HOLD":
+        reasons.append(decision.reason)
+    reasons.extend(decision.triggered_rules)
+    return reasons
