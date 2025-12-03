@@ -159,6 +159,12 @@ def choose_width(width_rule: Optional[WidthRule], underlying_price: float) -> Op
             return width_rule.default
         return min(allowed)
 
+    if width_rule.type == WidthRuleType.FIXED:
+        if width_rule.default is not None:
+            return width_rule.default
+        allowed = width_rule.allowed or []
+        return allowed[0] if allowed else None
+
     if width_rule.type == WidthRuleType.BY_PRICE_BRACKET:
         if not width_rule.brackets:
             return None

@@ -51,27 +51,40 @@ strategies:
 
     dte:
       target: 45
-      min: 30
-      max: 60
+      min: 40
+      max: 50
+
+    expiry_rules:
+      monthlies_only: true
 
     delta:
       short_leg:
-        target: 0.30   # aim around 20 delta
+        target: 0.30
         min: 0.25
         max: 0.35
 
     width_rule:
-      type: index_allowed
-      allowed: [1,5, 10, 25]   # SPX/XSP spread widths to consider
+      type: fixed
+      allowed: [5]
       default: 5
 
     filters:
-      min_pop: 0.55           # 50%
-    #  min_credit_per_width: 0.05  # e.g. 0.3 credit per $1 width
-      min_ivr: 0.20
-    #allowed_trend_regimes: ["uptrend", "sideways", "chop", "choppy_uptrend"]
+      min_pop: 0.60
+      min_credit_per_width: 0.25
+      min_ivr: 0.25
+    allowed_trend_regimes: ["uptrend", "range", "chop", "choppy_trend"]
+    blocked_trend_regimes: ["downtrend"]
     allowed_vol_regimes: ["normal", "high", "expansion", "low", "extreme"]
-    #blocked_trend_regimes: ["downtrend"]
+
+    risk_limits:
+      max_buying_power: 500
+      max_positions_per_symbol: 1
+
+    exit_rules:
+      profit_target_fraction: 0.5
+      dte_exit_target: 21
+      dte_exit_flex: 5
+      respect_earnings: true
 
   - name: short_put_spread_equity_45d
     label: "Equity Short Put Spread ~45 DTE"
@@ -83,61 +96,86 @@ strategies:
 
     dte:
       target: 45
-      min: 30
-      max: 60
+      min: 40
+      max: 50
+
+    expiry_rules:
+      monthlies_only: true
+      earnings_buffer_days: 21
 
     delta:
       short_leg:
-        target: 0.25   # a bit more aggressive in equities
-        min: 0.15
+        target: 0.30
+        min: 0.25
         max: 0.35
 
     width_rule:
-      type: by_price_bracket
-      brackets:
-        - max_price: 50
-          width: 1
-        - max_price: 200
-          width: 2
-        - max_price: 500
-          width: 3
-        - max_price: null   # no upper bound
-          width: 5
+      type: fixed
+      allowed: [5]
+      default: 5
 
     filters:
-      min_pop: 0.50
-      min_credit_per_width: 0.30
-      min_ivr: 0.20
+      min_pop: 0.60
+      min_credit_per_width: 0.25
+      min_ivr: 0.25
       max_ivr: 0.90
+    allowed_trend_regimes: ["uptrend", "range", "chop", "choppy_trend"]
+    blocked_trend_regimes: ["downtrend"]
+
+    risk_limits:
+      max_buying_power: 500
+      max_positions_per_symbol: 1
+
+    exit_rules:
+      profit_target_fraction: 0.5
+      dte_exit_target: 21
+      dte_exit_flex: 5
+      respect_earnings: true
 
 
-  - name: iron_condor_index_30d
-    label: "Index Iron Condor ~30 DTE"
+  - name: iron_condor_index_45d
+    label: "Index Iron Condor ~45 DTE"
     enabled: true
-    applies_to_universes: [tasty_watchlist_chris_historical_trades]
+    applies_to_universes: [tasty_watchlist_chris_historical_trades, index_core]
     product_type: index
     order_side: sell
     option_type: both   # short call spread + short put spread
 
     dte:
-      target: 30
-      min: 20
-      max: 40
+      target: 45
+      min: 40
+      max: 50
+
+    expiry_rules:
+      monthlies_only: true
 
     # For ICs we still care about short-leg delta band; width determines wings.
     delta:
       short_leg:
-        target: 0.20
-        min: 0.10
-        max: 0.30
+        target: 0.30
+        min: 0.25
+        max: 0.35
 
     width_rule:
-      type: index_allowed
-      allowed: [5, 10, 25]
+      type: fixed
+      allowed: [5]
       default: 5
 
     filters:
-      min_pop: 0.55
-      min_credit_per_width: 0.40
+      min_pop: 0.60
+      min_credit_per_width: 0.25
       min_ivr: 0.30
       max_ivr: 1.00
+    allowed_trend_regimes: ["range", "chop"]
+    blocked_trend_regimes: ["uptrend", "downtrend"]
+
+    risk_limits:
+      max_buying_power: 500
+      max_positions_per_symbol: 1
+      max_position_delta: 2.0
+
+    exit_rules:
+      profit_target_fraction: 0.5
+      dte_exit_target: 21
+      dte_exit_flex: 5
+      respect_earnings: true

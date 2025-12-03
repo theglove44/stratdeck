@@ -1049,7 +1049,7 @@ def scan_ta(strategy_hint, timeframe, lookback_bars, json_output):
     "--strategy",
     "strategy_filters",
     multiple=True,
-    help="Limit scan to specific strategies (e.g. --strategy iron_condor_index_30d).",
+    help="Limit scan to specific strategies (e.g. --strategy iron_condor_index_45d).",
 )
 @click.option(
     "--json-output",
@@ -1119,7 +1119,15 @@ def trade_ideas(
     if not ideas:
         return
 
-    payload = [idea.to_dict() for idea in ideas]
+    # Use model_dump to keep JSON output aligned with TradeIdea/TradeLeg fields (e.g., leg deltas/dte)
+    if hasattr(ideas[0], "model_dump"):
+        payload = [idea.model_dump(mode="json") for idea in ideas]
+    elif hasattr(ideas[0], "dict"):
+        payload = [idea.dict() for idea in ideas]
+    elif hasattr(ideas[0], "to_dict"):
+        payload = [idea.to_dict() for idea in ideas]
+    else:
+        payload = [idea.__dict__ for idea in ideas]
 
     store_trade_ideas(ideas)
     persist_last_ideas(payload, path=LAST_TRADE_IDEAS_PATH)
@@ -1135,8 +1143,7 @@ def trade_ideas(
                 path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(blob, encoding="utf-8")
             click.echo(f"Wrote {len(ideas)} ideas to {output_path}")
-        else:
-            click.echo(blob)
+        click.echo(blob)
         return
 
     click.echo(f"Generated {len(ideas)} trade idea(s):\n")

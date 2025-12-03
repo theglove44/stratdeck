@@ -189,6 +189,21 @@ class TastyProvider(IDataProvider):
             "calls": calls,
         }
 
+    def get_option_expirations(self, symbol: str) -> List[Dict[str, Any]]:
+        chain = self._get_json(f"/option-chains/{symbol}/nested")
+        items = chain.get("data", {}).get("items", [])
+        expirations = items[0].get("expirations", []) if items else []
+        results: List[Dict[str, Any]] = []
+        for exp in expirations:
+            results.append(
+                {
+                    "expiration-date": exp.get("expiration-date"),
+                    "days-to-expiration": exp.get("days-to-expiration"),
+                    "expiration-type": exp.get("expiration-type"),
+                }
+            )
+        return results
+
     def get_account_summary(self) -> Dict[str, Any]:
         if not self.account_id:
             return {}

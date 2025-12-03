@@ -35,6 +35,7 @@ class ProductType(str, Enum):
 class WidthRuleType(str, Enum):
     INDEX_ALLOWED = "index_allowed"
     BY_PRICE_BRACKET = "by_price_bracket"
+    FIXED = "fixed"
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +147,7 @@ class WidthRule(BaseModel):
     type:
       - index_allowed:     choose from a fixed set of allowed widths (e.g. [5, 10, 25])
       - by_price_bracket:  choose width based on underlying price brackets
+      - fixed:             enforce a single fixed width
     """
 
     type: WidthRuleType
@@ -164,6 +166,11 @@ class WidthRule(BaseModel):
         elif self.type == WidthRuleType.BY_PRICE_BRACKET:
             if not self.brackets:
                 raise ValueError("by_price_bracket width_rule requires 'brackets'")
+        elif self.type == WidthRuleType.FIXED:
+            if self.default is None and not self.allowed:
+                raise ValueError("fixed width_rule requires 'default' or 'allowed'")
+            if self.allowed is None:
+                self.allowed = [self.default] if self.default is not None else None
         return self
 
 
@@ -178,6 +185,46 @@ class StrategyFilters(BaseModel):
     min_credit_per_width: Optional[float] = None
     min_ivr: Optional[float] = None
     max_ivr: Optional[float] = None
+
+
+class ExpiryRules(BaseModel):
+    """
+    Additional expiry constraints beyond the DTE band.
+    """
+
+    monthlies_only: bool = False
+    earnings_buffer_days: Optional[int] = None
+
+
+class RiskLimits(BaseModel):
+    """
+    Risk guardrails that should be enforced per candidate.
+    """
+
+    max_buying_power: Optional[float] = None
+    max_positions_per_symbol: Optional[int] = None
+    max_position_delta: Optional[float] = None
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> "RiskLimits":
+        if self.max_buying_power is not None and self.max_buying_power < 0:
+            raise ValueError("max_buying_power must be non-negative")
+        if self.max_positions_per_symbol is not None and self.max_positions_per_symbol < 0:
+            raise ValueError("max_positions_per_symbol must be non-negative")
+        if self.max_position_delta is not None and self.max_position_delta < 0:
+            raise ValueError("max_position_delta must be non-negative")
+        return self
+
+
+class ExitRules(BaseModel):
+    """
+    Optional per-strategy exit hints for position monitoring.
+    """
+
+    profit_target_fraction: Optional[float] = None
+    dte_exit_target: Optional[int] = None
+    dte_exit_flex: Optional[int] = None
+    respect_earnings: bool = True
 
 
 class StrategyTemplate(BaseModel):
@@ -196,9 +243,12 @@ class StrategyTemplate(BaseModel):
     option_type: Literal["call", "put", "both"] = "put"
 
     dte: Optional[DTERule] = None
+    expiry_rules: Optional[ExpiryRules] = None
     delta: Optional[DeltaRule] = None
     width_rule: Optional[WidthRule] = None
     filters: Optional[StrategyFilters] = None
+    risk_limits: Optional[RiskLimits] = None
+    exit_rules: Optional[ExitRules] = None
     allowed_trend_regimes: Optional[List[str]] = None
     allowed_vol_regimes: Optional[List[str]] = None
     blocked_trend_regimes: Optional[List[str]] = None
