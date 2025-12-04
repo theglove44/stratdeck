@@ -3,12 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional
 
+from pydantic import BaseModel
+
 from stratdeck.strategies import (
     DTERule,
     ExpiryRules,
     RiskLimits,
     StrategyFilters,
     StrategyTemplate,
+    StrategyConfig,
+    WidthRuleType,
+    load_strategy_config,
 )
 from stratdeck.tools.filters import FilterDecision
 
@@ -22,6 +27,86 @@ def _to_date(value: Any) -> Optional[datetime]:
         return datetime.fromisoformat(str(value))
     except Exception:
         return None
+
+
+class StrategyRuleSnapshot(BaseModel):
+    """
+    Snapshot of the human-rule thresholds for a specific strategy template.
+    """
+
+    strategy_key: str
+    dte_target: Optional[int] = None
+    dte_min: Optional[int] = None
+    dte_max: Optional[int] = None
+    expected_spread_width: Optional[float] = None
+    target_short_delta: Optional[float] = None
+    short_delta_min: Optional[float] = None
+    short_delta_max: Optional[float] = None
+    ivr_floor: Optional[float] = None
+    pop_floor: Optional[float] = None
+    credit_per_width_floor: Optional[float] = None
+    allowed_trend_regimes: Optional[List[str]] = None
+    allowed_vol_regimes: Optional[List[str]] = None
+
+
+def _expected_width_from_rule(rule: Any) -> Optional[float]:
+    if rule is None:
+        return None
+    if rule.type == WidthRuleType.FIXED:
+        if rule.default is not None:
+            return float(rule.default)
+        if rule.allowed:
+            return float(rule.allowed[0])
+    if rule.type == WidthRuleType.INDEX_ALLOWED:
+        if rule.default is not None:
+            return float(rule.default)
+        if rule.allowed:
+            return float(min(rule.allowed))
+    if rule.type == WidthRuleType.BY_PRICE_BRACKET and rule.brackets:
+        sorted_brackets = sorted(
+            rule.brackets,
+            key=lambda b: float("inf") if b.max_price is None else b.max_price,
+        )
+        return float(sorted_brackets[0].width)
+    return None
+
+
+def snapshot_for_strategy(strategy_key: str, cfg: Optional[StrategyConfig] = None) -> StrategyRuleSnapshot:
+    """
+    Build a StrategyRuleSnapshot for the given strategy identifier using the
+    existing strategies.yaml configuration.
+    """
+
+    cfg = cfg or load_strategy_config()
+    match: Optional[StrategyTemplate] = None
+    for s in cfg.strategies:
+        if str(s.name).lower() == str(strategy_key).lower():
+            match = s
+            break
+
+    if match is None:
+        raise KeyError(f"Strategy {strategy_key!r} not found in strategies config")
+
+    dte_rule = getattr(match, "dte", None)
+    delta_rule = getattr(match, "delta", None)
+    short_leg = getattr(delta_rule, "short_leg", None)
+    filters = getattr(match, "filters", None)
+
+    return StrategyRuleSnapshot(
+        strategy_key=match.name,
+        dte_target=getattr(dte_rule, "target", None),
+        dte_min=getattr(dte_rule, "min", None),
+        dte_max=getattr(dte_rule, "max", None),
+        expected_spread_width=_expected_width_from_rule(getattr(match, "width_rule", None)),
+        target_short_delta=getattr(short_leg, "target", None),
+        short_delta_min=getattr(short_leg, "min", None),
+        short_delta_max=getattr(short_leg, "max", None),
+        ivr_floor=getattr(filters, "min_ivr", None),
+        pop_floor=getattr(filters, "min_pop", None),
+        credit_per_width_floor=getattr(filters, "min_credit_per_width", None),
+        allowed_trend_regimes=getattr(match, "allowed_trend_regimes", None),
+        allowed_vol_regimes=getattr(match, "allowed_vol_regimes", None),
+    )
 
 
 class HumanRulesFilter:

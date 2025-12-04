@@ -3,7 +3,7 @@ import click
 import json
 from datetime import datetime, timezone
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from .tools import orders
@@ -12,8 +12,9 @@ from .agents.scout import ScoutAgent
 from .agents.trader import TraderAgent
 from .agents.risk import RiskAgent
 from .agents.compliance import ComplianceAgent
-from .agents.trade_planner import TradePlanner
+from .agents.trade_planner import TradePlanner, TradeIdea, TradeLeg
 from .core.config import cfg
+from .filters import snapshot_for_strategy
 from .strategies import load_strategy_config
 from .strategy_engine import (
     build_strategy_universe_assignments,
@@ -45,6 +46,7 @@ from .data.market_metrics import (
     _extract_ivr_from_item,
     fetch_market_metrics_raw,
 )
+from .vetting import vet_batch
 
 log = logging.getLogger(__name__)
 
@@ -1379,6 +1381,52 @@ def vet_idea(idea_index: int, qty: int) -> None:
     click.echo(json.dumps(report, indent=2, default=str))
 
 
+def _rehydrate_trade_idea(raw: Any) -> TradeIdea:
+    if isinstance(raw, TradeIdea):
+        return raw
+    if isinstance(raw, dict):
+        legs = [TradeLeg(**leg) for leg in raw.get("legs", [])]
+        data = {f.name: raw.get(f.name) for f in fields(TradeIdea) if f.name not in {"legs", "short_legs", "long_legs"}}
+        data["legs"] = legs
+        short_leg_payloads = raw.get("short_legs") or []
+        long_leg_payloads = raw.get("long_legs") or []
+        if short_leg_payloads:
+            data["short_legs"] = [TradeLeg(**leg) for leg in short_leg_payloads]
+        if long_leg_payloads:
+            data["long_legs"] = [TradeLeg(**leg) for leg in long_leg_payloads]
+        return TradeIdea(**data)
+    raise ValueError("Unsupported TradeIdea payload")
+
+
+def _idea_payload(idea: Any) -> Dict[str, Any]:
+    if hasattr(idea, "model_dump"):
+        return idea.model_dump(mode="json")
+    if hasattr(idea, "dict"):
+        return idea.dict()
+    if hasattr(idea, "to_dict"):
+        return idea.to_dict()
+    if isinstance(idea, dict):
+        return dict(idea)
+    return getattr(idea, "__dict__", {}) or {}
+
+
+def _idea_symbol(idea: Any) -> str:
+    for key in ("symbol", "trade_symbol", "data_symbol"):
+        val = idea.get(key) if isinstance(idea, dict) else getattr(idea, key, None)
+        if val:
+            return str(val)
+    return ""
+
+
+def _fmt_opt(val: Any, digits: int = 2) -> str:
+    if val is None:
+        return "-"
+    try:
+        return f"{float(val):.{digits}f}"
+    except Exception:
+        return "-"
+
+
 @cli.command("ideas-vet")
 @click.option(
     "-q",
@@ -1389,79 +1437,118 @@ def vet_idea(idea_index: int, qty: int) -> None:
     help="Qty to use for compliance/buying power checks",
 )
 @click.option(
-    "--json-output",
-    type=click.Path(dir_okay=False, writable=True),
-    default=None,
-    help="Optional path to write a JSON vetting report",
+    "--ideas-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=LAST_TRADE_IDEAS_PATH,
+    show_default=True,
+    help="Path to TradeIdeas JSON produced by trade-ideas.",
 )
-def ideas_vet(qty: int, json_output: Optional[str]) -> None:
+@click.option(
+    "--json-output",
+    is_flag=True,
+    help="Emit vetted ideas as JSON instead of formatted text.",
+)
+@click.option(
+    "--output-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional path to write JSON output when --json-output is set.",
+)
+@click.option(
+    "--sort-by",
+    type=click.Choice(["symbol", "score"], case_sensitive=False),
+    default="symbol",
+    show_default=True,
+    help="Sort vetted ideas by symbol or score.",
+)
+def ideas_vet(qty: int, ideas_path: Path, json_output: bool, output_path: Optional[Path], sort_by: str) -> None:
     """
-    Run all TradeIdeas from the last trade-ideas run through ComplianceAgent.
+    Vet TradeIdeas from the last trade-ideas run against human rules.
 
     Example:
       python -m stratdeck.cli trade-ideas --json-output .stratdeck/last_trade_ideas.json
       python -m stratdeck.cli ideas-vet
     """
-    ideas = load_last_ideas()
+    try:
+        ideas = load_last_ideas(ideas_path)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except Exception as exc:
+        raise click.ClickException(f"Failed to load trade ideas from {ideas_path}: {exc}") from exc
+
     if not ideas:
         raise click.ClickException(
             "No TradeIdeas found. Run 'trade-ideas --json-output' first."
         )
 
-    trader, _ = _prepare_trader_agent()
-    report = []
+    try:
+        strategy_cfg = load_strategy_config()
+    except Exception as exc:  # pragma: no cover - defensive
+        raise click.ClickException(f"Failed to load strategy config: {exc}") from exc
 
-    for idx, idea in enumerate(ideas):
-        symbol = (
-            getattr(idea, "symbol", None)
-            or getattr(idea, "underlying", None)
-            or (idea.get("symbol") if isinstance(idea, dict) else None)
-        )
+    hydrated: List[Any] = []
+    for raw in ideas:
         try:
-            res = trader.vet_idea(idea, qty=qty)
-            report.append(
-                {
-                    "index": idx,
-                    "symbol": symbol,
-                    "allowed": res["allowed"],
-                    "violations": res.get("violations", []),
-                    "price": res["order_summary"].get("price"),
-                    "est_bp_impact": res["order_summary"].get("est_bp_impact"),
-                    "spread_plan": res["spread_plan"],
-                }
-            )
-        except Exception as exc:
-            report.append(
-                {
-                    "index": idx,
-                    "symbol": symbol,
-                    "allowed": False,
-                    "violations": [f"error: {exc}"],
-                    "price": None,
-                    "est_bp_impact": None,
-                    "spread_plan": None,
-                }
-            )
+            hydrated.append(_rehydrate_trade_idea(raw))
+        except Exception:
+            hydrated.append(raw)
+
+    def rules_lookup(strategy_key: str):
+        return snapshot_for_strategy(strategy_key, cfg=strategy_cfg)
+
+    vetted = vet_batch(hydrated, rules_lookup=rules_lookup)
+
+    if sort_by.lower() == "score":
+        vetted.sort(key=lambda pair: pair[1].score, reverse=True)
+    else:
+        vetted.sort(key=lambda pair: (_idea_symbol(pair[0]) or ""))
 
     if json_output:
-        path = Path(json_output)
-        if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-        click.echo(f"Wrote vetting report for {len(report)} ideas to {json_output}")
+        payload: List[Dict[str, Any]] = []
+        for idea, vetting in vetted:
+            idea_payload = _idea_payload(idea)
+            idea_payload["vetting"] = vetting.model_dump(mode="json")
+            payload.append(idea_payload)
+
+        blob = json.dumps(payload, indent=2, default=str)
+        if output_path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(blob, encoding="utf-8")
+            click.echo(f"Wrote {len(payload)} vetted ideas to {output_path}")
+        click.echo(blob)
         return
 
-    click.echo(f"Vetting {len(report)} ideas (qty={qty}):")
+    click.echo(f"Vetting {len(vetted)} ideas (qty={qty}):")
     click.echo("")
-    click.echo(" idx  symbol   allowed   est_bp   reason")
-    click.echo("---- -------- --------- -------- -----------------------------------")
-    for row in report:
-        status = "OK" if row["allowed"] else "VETO"
-        reason = "; ".join(row["violations"]) if row["violations"] else ""
-        bp = row["est_bp_impact"]
-        bp_str = f"{bp:.2f}" if isinstance(bp, (int, float)) else "-"
-        sym = (row["symbol"] or "")[:8]
-        click.echo(f"{row['index']:>3}  {sym:<8} {status:<9} {bp_str:<8} {reason[:60]}")
+    click.echo(
+        " symbol   strategy_id                 dir    dte  width  shortΔ   ivr    pop   cpw  verdict"
+    )
+    click.echo(" -------- -------------------------- ------ ---- ------ ------ ------ ------ --------")
+    for idea, vetting in vetted:
+        sym = (_idea_symbol(idea) or "")[:8]
+        strategy_id = (
+            idea.get("strategy_id") if isinstance(idea, dict) else getattr(idea, "strategy_id", None)
+        ) or (
+            idea.get("strategy") if isinstance(idea, dict) else getattr(idea, "strategy", None)
+        )
+        direction = (
+            idea.get("direction") if isinstance(idea, dict) else getattr(idea, "direction", None)
+        ) or ""
+        dte_val = idea.get("dte") if isinstance(idea, dict) else getattr(idea, "dte", None)
+        spread_width = idea.get("spread_width") if isinstance(idea, dict) else getattr(idea, "spread_width", None)
+        short_delta = (
+            idea.get("short_put_delta") if isinstance(idea, dict) else getattr(idea, "short_put_delta", None)
+        )
+        ivr = idea.get("ivr") if isinstance(idea, dict) else getattr(idea, "ivr", None)
+        pop = idea.get("pop") if isinstance(idea, dict) else getattr(idea, "pop", None)
+        cpw = idea.get("credit_per_width") if isinstance(idea, dict) else getattr(idea, "credit_per_width", None)
+
+        click.echo(
+            f" {sym:<8} {str(strategy_id or ''):<26} {direction:<6} "
+            f"{_fmt_opt(dte_val, 0):>4} {_fmt_opt(spread_width):>6} {_fmt_opt(short_delta):>6} "
+            f"{_fmt_opt(ivr):>6} {_fmt_opt(pop):>6} {_fmt_opt(cpw):>6} {vetting.verdict.value:<8}"
+        )
+        click.echo(f"   -> {vetting.rationale}")
 
 
 @cli.command("auto")

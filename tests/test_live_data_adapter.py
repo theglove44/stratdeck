@@ -45,7 +45,8 @@ def use_fake_provider():
     chains.set_provider(original)
 
 
-def test_chain_pricing_adapter_uses_provider_mid(use_fake_provider):
+def test_chain_pricing_adapter_uses_provider_mid(use_fake_provider, monkeypatch):
+    monkeypatch.setenv("STRATDECK_DATA_MODE", "live")
     adapter = ChainPricingAdapter()
     legs = [
         SimpleNamespace(type="put", side="short", strike=100.0),
