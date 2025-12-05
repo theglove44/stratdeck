@@ -9,12 +9,25 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from ..filters import HumanRulesFilter
-from ..strategy_engine import SymbolStrategyTask, choose_target_dte, choose_width
+from ..strategy_engine import (
+    SymbolStrategyTask,
+    build_strategy_universe_assignments,
+    build_symbol_strategy_tasks,
+    choose_target_dte,
+    choose_width,
+)
 from ..tools.chain_pricing_adapter import ChainPricingAdapter
 from ..tools.dates import compute_dte
 from ..tools.filters import FilterDecision, evaluate_candidate_filters
 from ..tools.retries import call_with_retries
 from ..tools.ta import resolve_symbols
+from ..strategies import load_strategy_config
+from ..tools.chartist import ChartistAgent
+from ..tools.vol import load_snapshot
+from ..tools.scan_cache import attach_ivr_to_scan_rows
+from ..tools.build_iv_snapshot import IV_SNAPSHOT_PATH
+from ..data.tasty_watchlists import get_watchlist_symbols
+from .scout import ScoutAgent
 
 if TYPE_CHECKING:
     from stratdeck.data.provider import IDataProvider
@@ -23,6 +36,125 @@ log = logging.getLogger(__name__)
 DEBUG_FILTERS = os.getenv("STRATDECK_DEBUG_STRATEGY_FILTERS") == "1" or os.getenv(
     "STRATDECK_DEBUG_FILTERS"
 ) == "1"
+
+
+def _resolve_tasty_watchlist(name: str, max_symbols: Optional[int]) -> List[str]:
+    """
+    Adapter between strategy-engine tasty_watchlist universes and the watchlist resolver.
+    """
+    try:
+        symbols = get_watchlist_symbols(name)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("Failed to resolve tasty watchlist %s: %r", name, exc)
+        return []
+
+    if max_symbols is not None:
+        symbols = symbols[:max_symbols]
+    return [str(sym).upper() for sym in symbols]
+
+
+def generate_trade_ideas_for_tasks(
+    tasks: Sequence[SymbolStrategyTask],
+    strategy_hint: str = "short_premium_range",
+    dte_target: int = 45,
+    max_per_symbol: int = 1,
+    *,
+    persist_scan_rows: bool = False,
+) -> List["TradeIdea"]:
+    """
+    Strategy-aware trade-ideas generator shared by CLI and orchestrator flows.
+    """
+    if not tasks:
+        return []
+
+    scout = ScoutAgent()
+    scout.C["watchlist"] = sorted({task.symbol for task in tasks})
+    chartist = ChartistAgent()
+    planner = TradePlanner()
+
+    base_results = scout.run()
+    if not base_results:
+        return []
+
+    enriched = chartist.analyze_scout_batch(
+        scout_results=base_results,
+        default_strategy_hint=strategy_hint,
+    )
+    if not enriched:
+        return []
+
+    try:
+        iv_snapshot = load_snapshot(str(IV_SNAPSHOT_PATH))
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning(
+            "[trade_planner] Failed to load IV snapshot at %s: %s",
+            IV_SNAPSHOT_PATH,
+            exc,
+        )
+        iv_snapshot = {}
+
+    scan_rows = attach_ivr_to_scan_rows(enriched, iv_snapshot)
+
+    if persist_scan_rows:
+        try:
+            from stratdeck.tools.scan_cache import store_scan_rows
+
+            store_scan_rows(scan_rows)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("[trade_planner] failed to persist scan rows: %s", exc)
+
+    strategy_context: Dict[str, SymbolStrategyTask] = {
+        task.symbol.upper(): task for task in tasks
+    }
+
+    for row in scan_rows:
+        symbol = row.get("symbol")
+        if not symbol:
+            continue
+        task = strategy_context.get(str(symbol).upper())
+        if not task:
+            continue
+        row["strategy_assignment"] = {
+            "strategy_template_name": task.strategy.name,
+            "strategy_template_label": task.strategy.label,
+        }
+
+    ideas = planner.generate_from_scan_results_with_strategies(
+        scan_rows=scan_rows,
+        tasks=tasks,
+        dte_target=dte_target,
+        max_per_symbol=max_per_symbol,
+    )
+    return ideas or []
+
+
+def generate_trade_ideas(
+    universe: str,
+    strategy_id: str,
+    *,
+    strategy_hint: str = "short_premium_range",
+    dte_target: int = 45,
+    max_per_symbol: int = 1,
+    persist_scan_rows: bool = False,
+) -> List["TradeIdea"]:
+    """
+    Public helper used by trade-ideas CLI and orchestrator flows.
+    """
+    strategy_cfg = load_strategy_config()
+    assignments = build_strategy_universe_assignments(
+        cfg=strategy_cfg,
+        tasty_watchlist_resolver=_resolve_tasty_watchlist,
+        strategy_filter=[strategy_id],
+        universe_filter=[universe],
+    )
+    tasks = build_symbol_strategy_tasks(assignments)
+    return generate_trade_ideas_for_tasks(
+        tasks=tasks,
+        strategy_hint=strategy_hint,
+        dte_target=dte_target,
+        max_per_symbol=max_per_symbol,
+        persist_scan_rows=persist_scan_rows,
+    )
 
 
 def _extract_price_from_quote(quote: Any) -> Tuple[Optional[float], Optional[str]]:
