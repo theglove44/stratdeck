@@ -8,12 +8,34 @@ import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from .agents.trade_planner import TradeIdea
 from .agents.trader import TraderAgent  # adjust import if your TraderAgent lives elsewhere
+from .filters.human_rules import StrategyRuleSnapshot, snapshot_for_strategy
+from .tools.orders import enter_paper_trade
+from .tools.positions import POS_PATH, PaperPosition, PositionsStore
+from .vetting import IdeaVetting, VetVerdict
 
 
 # ---------- Data structures ----------
+
+
+@dataclass
+class OpenedPositionSummary:
+    idea: TradeIdea
+    vetting: IdeaVetting
+    position: PaperPosition
+    opened_at: datetime
+
+
+@dataclass
+class OpenCycleResult:
+    universe: str
+    strategy: str
+    generated_count: int
+    eligible_count: int
+    opened: List[OpenedPositionSummary]
 
 
 @dataclass
@@ -65,6 +87,124 @@ class OrchestratorResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def is_eligible(vetting: IdeaVetting, min_score: float) -> bool:
+    return vetting.verdict is VetVerdict.ACCEPT and vetting.score >= min_score
+
+
+def select_trades(
+    vetted: Sequence[Tuple[TradeIdea, IdeaVetting]],
+    max_trades: int,
+    min_score: float,
+) -> List[Tuple[TradeIdea, IdeaVetting]]:
+    eligible = [
+        (idea, vet)
+        for idea, vet in vetted
+        if is_eligible(vet, min_score)
+    ]
+    eligible.sort(key=lambda pair: pair[1].score, reverse=True)
+    return list(eligible[:max_trades])
+
+
+def _open_paper_position_from_idea(idea: TradeIdea, qty: int) -> PaperPosition:
+    """
+    Default adapter: reuse the existing paper path used by enter-auto CLI.
+
+    1. Call enter_paper_trade(idea, qty).
+    2. Read the resulting PaperPosition from the positions JSON ledger.
+    """
+    result = enter_paper_trade(idea, qty=qty)
+    pos_id = result.get("position_id")
+    if not pos_id:
+        raise RuntimeError("enter_paper_trade returned no position_id")
+
+    store = PositionsStore(POS_PATH)
+    position = store.get(pos_id)
+    if position is None:
+        raise RuntimeError(f"PositionsStore missing position_id={pos_id}")
+
+    return position
+
+
+def run_open_cycle(
+    universe: str,
+    strategy: str,
+    max_trades: int,
+    min_score: float,
+    *,
+    qty: int = 1,
+    idea_generator: Callable[[str, str], List[TradeIdea]] | None = None,
+    vet_one: Callable[[TradeIdea, StrategyRuleSnapshot], IdeaVetting] | None = None,
+    open_from_idea: Callable[[TradeIdea, int], PaperPosition] | None = None,
+) -> OpenCycleResult:
+    """
+    Pure orchestrator for the daily open cycle (paper-only).
+
+    Steps:
+    1. Generate TradeIdeas for (universe, strategy).
+    2. Vet each idea using the existing vetting core and rules snapshot.
+    3. Filter to ideas with verdict=ACCEPT and score >= min_score.
+    4. Sort by score descending.
+    5. Select up to max_trades.
+    6. Open each selected idea in the paper trading engine.
+    7. Return an OpenCycleResult summary.
+    """
+    if idea_generator is None:
+        from stratdeck.agents.trade_planner import generate_trade_ideas
+
+        idea_generator = generate_trade_ideas
+
+    if vet_one is None:
+        from stratdeck.vetting import vet_single_idea
+
+        vet_one = vet_single_idea
+
+    if open_from_idea is None:
+        open_from_idea = _open_paper_position_from_idea
+
+    from stratdeck.strategies import load_strategy_config
+
+    strategy_cfg = load_strategy_config()
+    rules = snapshot_for_strategy(strategy, cfg=strategy_cfg)
+
+    ideas = idea_generator(universe, strategy)
+
+    vetted_pairs: List[Tuple[TradeIdea, IdeaVetting]] = []
+    for idea in ideas:
+        vet_result = vet_one(idea, rules)
+        vetted_pairs.append((idea, vet_result))
+
+    eligible_pairs = [
+        (idea, vet) for idea, vet in vetted_pairs if is_eligible(vet, min_score)
+    ]
+    selected_pairs = select_trades(
+        vetted_pairs,
+        max_trades=max_trades,
+        min_score=min_score,
+    )
+
+    opened: List[OpenedPositionSummary] = []
+    now = datetime.utcnow()
+
+    for idea, vet in selected_pairs:
+        pos = open_from_idea(idea, qty)
+        opened.append(
+            OpenedPositionSummary(
+                idea=idea,
+                vetting=vet,
+                position=pos,
+                opened_at=now,
+            )
+        )
+
+    return OpenCycleResult(
+        universe=universe,
+        strategy=strategy,
+        generated_count=len(ideas),
+        eligible_count=len(eligible_pairs),
+        opened=opened,
+    )
 
 
 # ---------- Orchestrator implementation ----------

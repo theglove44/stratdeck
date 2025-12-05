@@ -7,12 +7,18 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from .tools import orders
-from .orchestrator import Orchestrator, OrchestratorConfig
+from .orchestrator import Orchestrator, OrchestratorConfig, run_open_cycle
 from .agents.scout import ScoutAgent
 from .agents.trader import TraderAgent
 from .agents.risk import RiskAgent
 from .agents.compliance import ComplianceAgent
-from .agents.trade_planner import TradePlanner, TradeIdea, TradeLeg
+from .agents.trade_planner import (
+    TradePlanner,
+    TradeIdea,
+    TradeLeg,
+    generate_trade_ideas,
+    generate_trade_ideas_for_tasks,
+)
 from .core.config import cfg
 from .filters import snapshot_for_strategy
 from .strategies import load_strategy_config
@@ -156,62 +162,12 @@ def _build_trade_ideas_for_tasks(
     Scout/Chartist for TA and funneling the enriched rows into the
     strategy-aware TradePlanner path.
     """
-    if not tasks:
-        click.echo("No tasks provided to trade-ideas engine.", err=True)
-        return []
-
-    scout = ScoutAgent()
-    scout.C["watchlist"] = sorted({task.symbol for task in tasks})
-    chartist = ChartistAgent()
-    planner = TradePlanner()
-
-    base_results = scout.run()
-    if not base_results:
-        click.echo("Scout returned no candidates.", err=True)
-        return []
-
-    enriched = chartist.analyze_scout_batch(
-        scout_results=base_results,
-        default_strategy_hint=strategy_hint,
-    )
-    if not enriched:
-        click.echo("Chartist did not produce any TA-enriched rows.", err=True)
-        return []
-
-    try:
-        iv_snapshot = load_snapshot(str(IV_SNAPSHOT_PATH))
-    except Exception as exc:
-        click.echo(
-            f"[warn] Failed to load IV snapshot at {IV_SNAPSHOT_PATH}: {exc}",
-            err=True,
-        )
-        iv_snapshot = {}
-
-    scan_rows = attach_ivr_to_scan_rows(enriched, iv_snapshot)
-
-    strategy_context: Dict[str, SymbolStrategyTask] = {
-        task.symbol.upper(): task for task in tasks
-    }
-
-    for row in scan_rows:
-        symbol = row.get("symbol")
-        if not symbol:
-            continue
-        task = strategy_context.get(symbol.upper())
-        if not task:
-            continue
-        row["strategy_assignment"] = {
-            "strategy_template_name": task.strategy.name,
-            "strategy_template_label": task.strategy.label,
-        }
-
-    store_scan_rows(scan_rows)
-
-    ideas = planner.generate_from_scan_results_with_strategies(
-        scan_rows=scan_rows,
+    ideas = generate_trade_ideas_for_tasks(
         tasks=tasks,
+        strategy_hint=strategy_hint,
         dte_target=dte_target,
         max_per_symbol=max_per_symbol,
+        persist_scan_rows=True,
     )
     if not ideas:
         click.echo("No trade ideas matched the current signals.", err=True)
@@ -1118,27 +1074,29 @@ def trade_ideas(
         dte_target=dte_target,
         max_per_symbol=max_per_symbol,
     )
-    if not ideas:
-        return
-
-    # Use model_dump to keep JSON output aligned with TradeIdea/TradeLeg fields (e.g., leg deltas/dte)
-    if hasattr(ideas[0], "model_dump"):
-        payload = [idea.model_dump(mode="json") for idea in ideas]
-    elif hasattr(ideas[0], "dict"):
-        payload = [idea.dict() for idea in ideas]
-    elif hasattr(ideas[0], "to_dict"):
-        payload = [idea.to_dict() for idea in ideas]
+    if ideas:
+        if hasattr(ideas[0], "model_dump"):
+            payload = [idea.model_dump(mode="json") for idea in ideas]
+        elif hasattr(ideas[0], "dict"):
+            payload = [idea.dict() for idea in ideas]
+        elif hasattr(ideas[0], "to_dict"):
+            payload = [idea.to_dict() for idea in ideas]
+        else:
+            payload = [idea.__dict__ for idea in ideas]
     else:
-        payload = [idea.__dict__ for idea in ideas]
+        payload = []
 
-    store_trade_ideas(ideas)
+    store_trade_ideas(ideas or [])
     persist_last_ideas(payload, path=LAST_TRADE_IDEAS_PATH)
 
     if output_path and not json_output:
         raise click.ClickException("--output-path requires --json-output.")
 
     if json_output:
-        blob = json.dumps(payload, indent=2, default=str)
+        if not payload:
+            blob = "[\n]"
+        else:
+            blob = json.dumps(payload, indent=2, default=str)
         if output_path:
             path = Path(output_path)
             if not path.parent.exists():
@@ -1146,6 +1104,10 @@ def trade_ideas(
             path.write_text(blob, encoding="utf-8")
             click.echo(f"Wrote {len(ideas)} ideas to {output_path}")
         click.echo(blob)
+        return
+
+    if not ideas:
+        click.echo("No trade ideas matched the current signals.", err=True)
         return
 
     click.echo(f"Generated {len(ideas)} trade idea(s):\n")
@@ -1549,6 +1511,126 @@ def ideas_vet(qty: int, ideas_path: Path, json_output: bool, output_path: Option
             f"{_fmt_opt(ivr):>6} {_fmt_opt(pop):>6} {_fmt_opt(cpw):>6} {vetting.verdict.value:<8}"
         )
         click.echo(f"   -> {vetting.rationale}")
+
+
+@cli.command(name="open-cycle")
+@click.option(
+    "--universe",
+    required=True,
+    help="Universe name (e.g. index_core, tasty_watchlist_chris_historical_trades).",
+)
+@click.option(
+    "--strategy",
+    "strategy_id",
+    required=True,
+    help="Strategy ID (e.g. short_put_spread_index_45d).",
+)
+@click.option(
+    "--max-trades",
+    type=int,
+    default=3,
+    show_default=True,
+    help="Maximum number of trades to open in this cycle.",
+)
+@click.option(
+    "--min-score",
+    type=float,
+    default=80.0,
+    show_default=True,
+    help="Minimum vetting score to be eligible.",
+)
+@click.option(
+    "--qty",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Contract quantity per trade.",
+)
+@click.option(
+    "--json-output",
+    is_flag=True,
+    default=False,
+    help="Emit JSON instead of human-readable output.",
+)
+def open_cycle(
+    universe: str,
+    strategy_id: str,
+    max_trades: int,
+    min_score: float,
+    qty: int,
+    json_output: bool,
+) -> None:
+    """Run the daily open-cycle orchestrator (paper-only)."""
+    result = run_open_cycle(
+        universe=universe,
+        strategy=strategy_id,
+        max_trades=max_trades,
+        min_score=min_score,
+        qty=qty,
+    )
+
+    if json_output:
+        payload: List[Dict[str, Any]] = []
+        for opened in result.opened:
+            idea_payload = _idea_payload(opened.idea)
+            vet = opened.vetting
+            pos = opened.position
+            payload.append(
+                {
+                    "universe": result.universe,
+                    "strategy": result.strategy,
+                    "idea": idea_payload,
+                    "vetting": {
+                        "score": vet.score,
+                        "verdict": vet.verdict.value,
+                        "rationale": vet.rationale,
+                        "reasons": vet.reasons,
+                    },
+                    "position": pos.model_dump(mode="json"),
+                    "opened_at": opened.opened_at.isoformat(),
+                }
+            )
+
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    total = result.generated_count
+    eligible = result.eligible_count
+    opened_count = len(result.opened)
+
+    click.echo(
+        f"[open-cycle] universe={result.universe} strategy={result.strategy} "
+        f"ideas={total} eligible={eligible} opened={opened_count}"
+    )
+
+    if opened_count == 0:
+        click.echo("[open-cycle] No trades opened (verdict/score filters blocked everything).")
+        return
+
+    header = f"{'Symbol':<8} {'Strategy':<30} {'Score':>6} {'Verdict':>9} {'Qty':>4}"
+    click.echo(header)
+    click.echo("-" * len(header))
+
+    for opened in result.opened:
+        idea = opened.idea
+        vet = opened.vetting
+        sym = _idea_symbol(idea)
+        strat_label = (
+            idea.get("strategy_id")
+            if isinstance(idea, dict)
+            else getattr(idea, "strategy_id", None)
+        ) or (
+            idea.get("strategy")
+            if isinstance(idea, dict)
+            else getattr(idea, "strategy", "")
+        )
+        click.echo(
+            f"{sym:<8} "
+            f"{strat_label:<30} "
+            f"{vet.score:>6.1f} "
+            f"{vet.verdict.value:>9} "
+            f"{qty:>4}"
+        )
 
 
 @cli.command("auto")
